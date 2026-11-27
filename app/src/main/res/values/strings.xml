@@ -1,0 +1,58 @@
+<resources>
+    <string name="app_name">Clipper</string>
+    <string name="app_tagline">Offline-First Media Studio</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_fetch">Fetch</string>
+    <string name="nav_compress">Compress</string>
+    <string name="nav_cutout">Cutout</string>
+    <string name="nav_captions">Captions</string>
+
+    <!-- Common -->
+    <string name="action_pick_video">Pick Video</string>
+    <string name="action_pick_image">Pick Image</string>
+    <string name="action_save_gallery">Save to Device</string>
+    <string name="action_reset">Reset</string>
+    <string name="action_undo">Undo</string>
+    <string name="action_redo">Redo</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_paste">Paste</string>
+
+    <!-- Fetch Screen -->
+    <string name="fetch_title">Direct Media Fetch</string>
+    <string name="fetch_subtitle">Inspect, preview, transcode, or extract audio from direct open-access media links or device files.</string>
+    <string name="fetch_url_placeholder">https://example.com/media/clip.mp4</string>
+    <string name="fetch_button">Fetch</string>
+    <string name="fetch_local_button">Or Import Local File</string>
+    <string name="fetch_policy_notice">Clipper supports direct open-access HTTP/HTTPS media files (.mp4, .webm, .mov, .jpg, .png, .mp3) and local device files. Protected streaming platforms and anti-bot bypasses are not supported.</string>
+    <string name="fetch_download_video">Download &amp; Save</string>
+    <string name="fetch_extract_audio">Extract Audio (M4A)</string>
+
+    <!-- Compress Screen -->
+    <string name="compress_title">Precision Compressor</string>
+    <string name="compress_subtitle">Hardware-accelerated video transcoding &amp; lossless/lossy image optimization right on device.</string>
+    <string name="compress_mode_video">Video</string>
+    <string name="compress_mode_image">Image</string>
+    <string name="compress_start">Compress &amp; Export</string>
+
+    <!-- Cutout Screen -->
+    <string name="cutout_title">Background Studio</string>
+    <string name="cutout_subtitle">Offline AI portrait detection, CIELAB object segmentation, precision lasso, magic wand &amp; brush.</string>
+    <string name="cutout_auto_portrait">AI Portrait</string>
+    <string name="cutout_auto_object">Smart Object</string>
+    <string name="cutout_tool_lasso">Lasso</string>
+    <string name="cutout_tool_wand">Magic Wand</string>
+    <string name="cutout_tool_erase">Erase</string>
+    <string name="cutout_tool_restore">Restore</string>
+    <string name="cutout_export_png">Export PNG</string>
+
+    <!-- Captions Screen -->
+    <string name="captions_title">Caption Studio</string>
+    <string name="captions_subtitle">10 bundled offline fonts, rich multi-color text highlighting, voice dictation, SRT export &amp; video burn-in.</string>
+    <string name="captions_dictate">Voice Dictate</string>
+    <string name="captions_import_srt">Import SRT</string>
+    <string name="captions_export_srt">Export SRT</string>
+    <string name="captions_export_video">Burn Into Video</string>
+    <string name="captions_export_card">Save Text Card</string>
+</resources>

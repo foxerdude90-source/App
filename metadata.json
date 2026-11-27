@@ -1,0 +1,6 @@
+{
+  "name": "Clipper",
+  "description": "Minimalist offline-first media studio featuring a direct open-media link fetcher with quality and audio extraction, hardware video & image compressor, precision background remover with lasso and subject detection, and a 10-font caption generator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
