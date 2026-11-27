@@ -7,8 +7,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.cutout.BackgroundRemovalEngine
 import com.example.core.cutout.CutoutBackgroundStyle
+import com.example.core.cutout.DetectedSubjectItem
 import com.example.core.cutout.LassoMode
 import com.example.core.cutout.NormalizedPoint
+import com.example.core.cutout.SubjectSegmentationEngine
 import com.example.core.media.ImageCompressorEngine
 import com.example.core.media.MediaStoreSaver
 import com.example.core.media.SaveCategory
@@ -22,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 
 enum class CutoutTool(val label: String) {
     LASSO("Lasso"),
@@ -40,6 +43,12 @@ data class CutoutUiState(
     val objectSensitivity: Float = 26f,
     val brushSizeFraction: Float = 0.055f,
     val featherRadius: Int = 2,
+    val decontaminateEdges: Boolean = true,
+    val autoCropExport: Boolean = false,
+    val detectedSubjects: List<DetectedSubjectItem> = emptyList(),
+    val selectedSubjectId: Int? = null, // null = all subjects combined
+    val activeEngineLabel: String? = null,
+    val foregroundPercent: Float? = null,
     val showOriginalComparison: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
@@ -56,6 +65,7 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
 
     private var sourcePixels: IntArray? = null
     private var currentMask: ByteArray? = null
+    private var combinedDetectedMask: ByteArray? = null
     private val undoStack = ArrayDeque<ByteArray>()
     private val redoStack = ArrayDeque<ByteArray>()
 
@@ -66,7 +76,17 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
 
     fun loadImage(uri: Uri) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, errorMessage = null, savedResult = null) }
+            _uiState.update {
+                it.copy(
+                    isProcessing = true,
+                    errorMessage = null,
+                    savedResult = null,
+                    detectedSubjects = emptyList(),
+                    selectedSubjectId = null,
+                    activeEngineLabel = null,
+                    foregroundPercent = null,
+                )
+            }
             try {
                 val bmp = withContext(Dispatchers.Default) {
                     ImageCompressorEngine.decodeSampledBitmap(getApplication(), uri, MAX_WORK_EDGE_PX)
@@ -77,6 +97,7 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
 
                 sourcePixels = pixels
                 currentMask = fullMask
+                combinedDetectedMask = null
                 undoStack.clear()
                 redoStack.clear()
 
@@ -90,7 +111,7 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
                         canUndo = false,
                         canRedo = false,
                         isProcessing = false,
-                        statusMessage = "Loaded ${bmp.width}×${bmp.height}px. Run Auto Detect or draw a Lasso.",
+                        statusMessage = "Loaded ${bmp.width}×${bmp.height}px. Tap AI Subject Remover to isolate any foreground object.",
                     )
                 }
             } catch (e: Exception) {
@@ -125,6 +146,15 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(featherRadius = radius.coerceIn(0, 6)) }
     }
 
+    fun toggleDecontaminateEdges() {
+        _uiState.update { it.copy(decontaminateEdges = !it.decontaminateEdges) }
+        recomposePreview()
+    }
+
+    fun toggleAutoCropExport() {
+        _uiState.update { it.copy(autoCropExport = !it.autoCropExport) }
+    }
+
     fun toggleOriginalComparison() {
         _uiState.update { it.copy(showOriginalComparison = !it.showOriginalComparison) }
     }
@@ -134,13 +164,83 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
         recomposePreview()
     }
 
+    /**
+     * Primary AI Subject Remover: uses Google ML Kit Subject Segmentation for ANY object/person/pet
+     * with automatic anti-wipeout protection and offline Portrait + Edge-Barrier Saliency fallback.
+     */
+    fun runAiSubjectDetect() {
+        val src = _uiState.value.sourceBitmap ?: return
+        val sens = _uiState.value.objectSensitivity
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isProcessing = true,
+                    statusMessage = "Detecting foreground subjects with ML Kit Subject AI...",
+                    errorMessage = null,
+                )
+            }
+            try {
+                val res = SubjectSegmentationEngine.detectAnySubject(src, fallbackSensitivity = sens)
+                combinedDetectedMask = res.combinedMask
+                _uiState.update {
+                    it.copy(
+                        detectedSubjects = res.subjects,
+                        selectedSubjectId = null,
+                        activeEngineLabel = res.engineUsed,
+                        foregroundPercent = res.foregroundPercent,
+                    )
+                }
+                val pctStr = String.format(Locale.US, "%.1f%%", res.foregroundPercent)
+                commitMask(
+                    res.combinedMask,
+                    "${res.engineUsed}: isolated ${res.subjects.size.coerceAtLeast(1)} subject(s) ($pctStr kept).",
+                )
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(isProcessing = false, errorMessage = e.message ?: "Subject segmentation failed.")
+                }
+            }
+        }
+    }
+
+    fun selectDetectedSubject(subjectId: Int?) {
+        val maskToUse = if (subjectId == null) {
+            combinedDetectedMask
+        } else {
+            _uiState.value.detectedSubjects.firstOrNull { it.id == subjectId }?.mask
+        } ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(selectedSubjectId = subjectId, isProcessing = true) }
+            val label = if (subjectId == null) "All detected subjects selected." else "Isolated Subject #$subjectId."
+            commitMask(maskToUse.copyOf(), label)
+        }
+    }
+
     fun runAiPortraitDetect() {
         val src = _uiState.value.sourceBitmap ?: return
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, statusMessage = "Running offline ML Portrait segmentation...", errorMessage = null) }
+            _uiState.update {
+                it.copy(isProcessing = true, statusMessage = "Running bundled offline ML Portrait AI...", errorMessage = null)
+            }
             try {
                 val mask = BackgroundRemovalEngine.detectPortraitMask(src)
-                commitMask(mask, "AI Portrait mask applied.")
+                val ratio = SubjectSegmentationEngine.computeForegroundRatio(mask)
+                if (ratio < 0.015f) {
+                    _uiState.update {
+                        it.copy(
+                            isProcessing = false,
+                            errorMessage = "No human portrait found in this image. Use AI Subject instead to detect general objects.",
+                        )
+                    }
+                    return@launch
+                }
+                _uiState.update {
+                    it.copy(
+                        activeEngineLabel = "ML Kit Portrait AI",
+                        foregroundPercent = ratio * 100f,
+                    )
+                }
+                commitMask(mask, "Offline Portrait AI mask applied (${String.format(Locale.US, "%.1f%%", ratio * 100f)} kept).")
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isProcessing = false, errorMessage = e.message ?: "Portrait segmentation failed.")
@@ -151,17 +251,53 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
 
     fun runSmartObjectDetect() {
         val src = _uiState.value.sourceBitmap ?: return
+        val pixels = sourcePixels ?: return
         val sens = _uiState.value.objectSensitivity
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, statusMessage = "Segmenting object in CIELAB space...", errorMessage = null) }
+            _uiState.update {
+                it.copy(isProcessing = true, statusMessage = "Running Edge-Barrier CIELAB object segmentation...", errorMessage = null)
+            }
             try {
-                val mask = BackgroundRemovalEngine.detectSmartObjectMask(src, sensitivity = sens)
-                commitMask(mask, "Smart Object cutout applied (ΔE = ${sens.toInt()}).")
+                val mask = withContext(Dispatchers.Default) {
+                    SubjectSegmentationEngine.computeEdgeBarrierSalientMask(pixels, src.width, src.height, sens)
+                }
+                val pct = SubjectSegmentationEngine.computeForegroundRatio(mask) * 100f
+                _uiState.update {
+                    it.copy(
+                        activeEngineLabel = "Edge-Barrier Saliency",
+                        foregroundPercent = pct,
+                    )
+                }
+                commitMask(mask, "Edge-Barrier cutout applied (ΔE = ${sens.toInt()}, ${String.format(Locale.US, "%.1f%%", pct)} kept).")
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isProcessing = false, errorMessage = e.message ?: "Object detection failed.")
                 }
             }
+        }
+    }
+
+    fun adjustMaskEdge(deltaPx: Int) {
+        val src = _uiState.value.sourceBitmap ?: return
+        val mask = currentMask ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessing = true) }
+            val next = withContext(Dispatchers.Default) {
+                SubjectSegmentationEngine.morphologicalAdjustMask(mask, src.width, src.height, deltaPx)
+            }
+            val label = if (deltaPx > 0) "Expanded mask edges by +${deltaPx}px." else "Shrank mask edges by ${deltaPx}px."
+            commitMask(next, label)
+        }
+    }
+
+    fun invertCurrentMask() {
+        val mask = currentMask ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessing = true) }
+            val inverted = withContext(Dispatchers.Default) {
+                SubjectSegmentationEngine.invertMask(mask)
+            }
+            commitMask(inverted, "Inverted foreground & background mask.")
         }
     }
 
@@ -238,6 +374,7 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
         val src = _uiState.value.sourceBitmap ?: return
         val full = BackgroundRemovalEngine.createFullOpaqueMask(src.width, src.height)
         viewModelScope.launch {
+            _uiState.update { it.copy(selectedSubjectId = null, foregroundPercent = 100f) }
             commitMask(full, "Mask restored to original image.")
         }
     }
@@ -258,16 +395,24 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
 
     fun exportPng() {
         val bmp = _uiState.value.previewBitmap ?: return
+        val mask = currentMask
+        val shouldCrop = _uiState.value.autoCropExport
         val context = getApplication<Application>()
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, errorMessage = null, savedResult = null) }
             try {
                 val saved = withContext(Dispatchers.IO) {
+                    val exportBmp = if (shouldCrop && mask != null) {
+                        SubjectSegmentationEngine.autoCropToSubjectBounds(bmp, mask, paddingPx = 12)
+                    } else {
+                        bmp
+                    }
                     val temp = File(context.cacheDir, "cutout_${System.currentTimeMillis()}.png")
                     FileOutputStream(temp).use { out ->
-                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        exportBmp.compress(Bitmap.CompressFormat.PNG, 100, out)
                         out.flush()
                     }
+                    if (exportBmp !== bmp && !exportBmp.isRecycled) exportBmp.recycle()
                     val res = MediaStoreSaver.saveFileToGallery(
                         context = context,
                         sourceFile = temp,
@@ -307,13 +452,23 @@ class CutoutViewModel(application: Application) : AndroidViewModel(application) 
         val src = _uiState.value.sourceBitmap ?: return
         val mask = currentMask ?: return
         val style = _uiState.value.backgroundStyle
+        val decontaminate = _uiState.value.decontaminateEdges
         viewModelScope.launch {
             val composed = withContext(Dispatchers.Default) {
-                BackgroundRemovalEngine.composeResultBitmap(src, mask, style)
+                val cleanSource = if (decontaminate) {
+                    SubjectSegmentationEngine.decontaminateEdgeColors(src, mask)
+                } else {
+                    src
+                }
+                val result = BackgroundRemovalEngine.composeResultBitmap(cleanSource, mask, style)
+                if (cleanSource !== src && !cleanSource.isRecycled) cleanSource.recycle()
+                result
             }
+            val pct = SubjectSegmentationEngine.computeForegroundRatio(mask) * 100f
             _uiState.update {
                 it.copy(
                     previewBitmap = composed,
+                    foregroundPercent = pct,
                     canUndo = undoStack.isNotEmpty(),
                     canRedo = redoStack.isNotEmpty(),
                     isProcessing = false,

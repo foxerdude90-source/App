@@ -55,7 +55,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun dashboard_rendersAndSwitchesAcrossAllFourWorkspaces() {
+    fun dashboard_rendersAndSwitchesAcrossAllFiveWorkspaces() {
         composeTestRule.setContent {
             ClipperTheme {
                 ClipperApp()
@@ -63,24 +63,29 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // Default Fetch workspace
+        // Default Media Downloader workspace
         composeTestRule.onNodeWithTag("fetch_url_input").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("fetch_submit_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("fetch_inspect_button").assertIsDisplayed()
 
-        // Switch to Compress workspace
-        composeTestRule.onNodeWithTag("nav_tab_compress").performClick()
+        // Switch to GPU Upscale workspace
+        composeTestRule.onNodeWithTag("nav_tab_upscale").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("compress_tab_video").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("compress_tab_image").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("upscale_pick_video_button").assertIsDisplayed()
 
         // Switch to Cutout workspace
         composeTestRule.onNodeWithTag("nav_tab_cutout").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("cutout_pick_image_button").assertIsDisplayed()
 
-        // Switch to Captions workspace
-        composeTestRule.onNodeWithTag("nav_tab_captions").performClick()
+        // Switch to Voice Studio workspace
+        composeTestRule.onNodeWithTag("nav_tab_voice").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("captions_pick_video_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("voice_cat_all").assertIsDisplayed()
+
+        // Switch to Pro Media Lab workspace
+        composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_tool_trimmer").assertIsDisplayed()
     }
 }
+

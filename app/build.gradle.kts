@@ -64,6 +64,11 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
@@ -132,6 +137,9 @@ dependencies {
   implementation(libs.androidx.media3.effect)
   implementation(libs.androidx.media3.common)
   implementation(libs.mlkit.segmentation.selfie)
+  implementation(libs.mlkit.subject.segmentation)
+  implementation(libs.youtubedl.library)
+  implementation(libs.youtubedl.ffmpeg)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)

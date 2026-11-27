@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -85,12 +86,15 @@ class DirectMediaFetcher(
             "fb.watch",
         )
 
-        private val OG_VIDEO_REGEX = Regex(
-            """<meta[^>]+(?:property|name)=["']og:video(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']""",
+        private val META_TAG_REGEX = Regex(
+            """<meta\b[^>]*>""",
             RegexOption.IGNORE_CASE,
         )
-        private val OG_IMAGE_REGEX = Regex(
-            """<meta[^>]+(?:property|name)=["']og:image(?::secure_url|:url)?["'][^>]+content=["']([^"']+)["']""",
+        private val ATTR_REGEX = Regex(
+            """([a-zA-Z0-9_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
+        )
+        private val VIDEO_SRC_REGEX = Regex(
+            """<(?:video|source)\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')""",
             RegexOption.IGNORE_CASE,
         )
 
@@ -99,19 +103,20 @@ class DirectMediaFetcher(
             if (trimmed.isEmpty()) {
                 return UrlValidationResult.Rejected("Paste a direct http:// or https:// media URL first.")
             }
-            val uri = try {
-                URI(trimmed)
-            } catch (_: Exception) {
-                return UrlValidationResult.Rejected("Invalid URL syntax. Example: https://example.com/clip.mp4")
-            }
 
-            val scheme = uri.scheme?.lowercase(Locale.US)
-            if (scheme != "http" && scheme != "https") {
+            val schemeMatch = Regex("""^([a-zA-Z][a-zA-Z0-9+.-]*):""").find(trimmed)
+            val rawScheme = schemeMatch?.groupValues?.getOrNull(1)?.lowercase(Locale.US)
+            if (rawScheme != null && rawScheme != "http" && rawScheme != "https") {
                 return UrlValidationResult.Rejected("Only http:// and https:// URLs are supported.")
             }
 
-            val host = uri.host?.lowercase(Locale.US)?.trimEnd('.')
-                ?: return UrlValidationResult.Rejected("URL must include a valid host name.")
+            val httpUrl = trimmed.toHttpUrlOrNull()
+                ?: return UrlValidationResult.Rejected("Invalid URL syntax. Example: https://example.com/clip.mp4")
+
+            val host = httpUrl.host.lowercase(Locale.US).trimEnd('.')
+            if (host.isEmpty()) {
+                return UrlValidationResult.Rejected("URL must include a valid host name.")
+            }
 
             if (isPrivateOrLoopbackHost(host)) {
                 return UrlValidationResult.Rejected("Local or private network addresses are blocked for security.")
@@ -122,17 +127,23 @@ class DirectMediaFetcher(
             }
             if (isRestrictedPlatform) {
                 return UrlValidationResult.Rejected(
-                    "Clipper does not scrape or bypass protections on $host. " +
-                        "Paste a direct open-access media file URL (.mp4, .webm, .jpg, .png, .mp3) or import a local file from your device."
+                    "Downloading from $host is not supported due to platform Terms of Service and Google Play policies. " +
+                        "Paste a direct open-access media URL (.mp4, .webm, .jpg, .png, .mp3) or tap Device to import a local file."
                 )
             }
 
-            return UrlValidationResult.Valid(trimmed)
+            return UrlValidationResult.Valid(httpUrl.toString())
         }
 
         fun isPrivateOrLoopbackHost(host: String): Boolean {
-            val normalized = host.lowercase(Locale.US)
-            if (normalized == "localhost" || normalized.endsWith(".local") || normalized == "::1") {
+            val normalized = host.lowercase(Locale.US).removePrefix("[").removeSuffix("]")
+            if (normalized == "localhost" || normalized.endsWith(".local") || normalized == "::1" || normalized == "::") {
+                return true
+            }
+            if (normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd") ||
+                normalized.startsWith("::ffff:127.") || normalized.startsWith("::ffff:10.") ||
+                normalized.startsWith("::ffff:192.168.")
+            ) {
                 return true
             }
             // Check raw IPv4 literals synchronously without DNS lookups in unit tests
@@ -153,7 +164,7 @@ class DirectMediaFetcher(
 
         fun classifyMimeType(mimeType: String, urlOrName: String): DetectedMediaKind {
             val lowerMime = mimeType.lowercase(Locale.US)
-            val lowerPath = urlOrName.lowercase(Locale.US).substringBefore('?')
+            val lowerPath = urlOrName.lowercase(Locale.US).substringBefore('?').substringBefore('#')
             return when {
                 lowerMime.startsWith("video/") ||
                     lowerPath.endsWith(".mp4") || lowerPath.endsWith(".mov") ||
@@ -174,32 +185,58 @@ class DirectMediaFetcher(
             }
         }
 
-        fun extractOpenGraphMediaUrl(html: String): String? {
-            OG_VIDEO_REGEX.find(html)?.groupValues?.getOrNull(1)?.let { return it }
-            OG_IMAGE_REGEX.find(html)?.groupValues?.getOrNull(1)?.let { return it }
-            return null
+        fun extractOpenGraphMediaUrl(html: String, baseUrl: String? = null): String? {
+            var ogImageCandidate: String? = null
+            for (tagMatch in META_TAG_REGEX.findAll(html)) {
+                val attrs = mutableMapOf<String, String>()
+                for (attrMatch in ATTR_REGEX.findAll(tagMatch.value)) {
+                    val key = attrMatch.groupValues[1].lowercase(Locale.US)
+                    val value = attrMatch.groupValues[2].ifEmpty { attrMatch.groupValues[3] }
+                    attrs[key] = value
+                }
+                val prop = (attrs["property"] ?: attrs["name"])?.lowercase(Locale.US) ?: continue
+                val content = attrs["content"]?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+                when (prop) {
+                    "og:video:secure_url", "og:video:url", "og:video" -> {
+                        return resolveHtmlUrl(decodeHtmlEntities(content), baseUrl)
+                    }
+                    "og:image:secure_url", "og:image:url", "og:image" -> {
+                        if (ogImageCandidate == null) {
+                            ogImageCandidate = resolveHtmlUrl(decodeHtmlEntities(content), baseUrl)
+                        }
+                    }
+                }
+            }
+
+            VIDEO_SRC_REGEX.find(html)?.let { match ->
+                val rawSrc = match.groupValues[1].ifEmpty { match.groupValues[2] }.trim()
+                if (rawSrc.isNotEmpty() && !rawSrc.startsWith("blob:", ignoreCase = true) && !rawSrc.startsWith("data:", ignoreCase = true)) {
+                    return resolveHtmlUrl(decodeHtmlEntities(rawSrc), baseUrl)
+                }
+            }
+
+            return ogImageCandidate
+        }
+
+        private fun decodeHtmlEntities(input: String): String =
+            input
+                .replace("&amp;", "&")
+                .replace("&#38;", "&")
+                .replace("&#x26;", "&", ignoreCase = true)
+
+        private fun resolveHtmlUrl(candidate: String, baseUrl: String?): String {
+            if (baseUrl.isNullOrBlank()) return candidate
+            val base = baseUrl.toHttpUrlOrNull() ?: return candidate
+            return base.resolve(candidate)?.toString() ?: candidate
         }
     }
 
     suspend fun probeRemoteUrl(rawUrl: String): ProbedMediaInfo = withContext(Dispatchers.IO) {
-        val validated = when (val result = validateUrl(rawUrl)) {
-            is UrlValidationResult.Valid -> result.normalizedUrl
-            is UrlValidationResult.Rejected -> throw IllegalArgumentException(result.reason)
-        }
-
-        // Verify resolved DNS does not point to a private/loopback address (SSRF defense)
-        val parsedUri = URI(validated)
-        val addresses = try {
-            InetAddress.getAllByName(parsedUri.host)
-        } catch (_: Exception) {
-            emptyArray()
-        }
-        if (addresses.any { it.isLoopbackAddress || it.isSiteLocalAddress || it.isLinkLocalAddress || it.isAnyLocalAddress }) {
-            throw IllegalArgumentException("Resolved host points to a private or loopback network address.")
-        }
+        val validated = validateAndVerifyDns(rawUrl)
 
         var targetUrl = validated
         var headInfo = requestProbeHeaders(targetUrl)
+        targetUrl = validateAndVerifyDns(headInfo.resolvedUrl)
 
         // If an open public HTML page advertises an open-graph direct media URL, inspect that URL once.
         if (headInfo.mimeType.startsWith("text/html")) {
@@ -208,16 +245,15 @@ class DirectMediaFetcher(
                     "This link returned an HTML webpage with no direct open-access media file. " +
                         "Please paste a direct media URL ending in .mp4, .jpg, .png, or .mp3."
                 )
-            when (val ogCheck = validateUrl(ogMediaUrl)) {
-                is UrlValidationResult.Valid -> {
-                    targetUrl = ogCheck.normalizedUrl
-                    headInfo = requestProbeHeaders(targetUrl)
-                }
-                is UrlValidationResult.Rejected -> throw IllegalArgumentException(ogCheck.reason)
-            }
+            targetUrl = validateAndVerifyDns(ogMediaUrl)
+            headInfo = requestProbeHeaders(targetUrl)
+            targetUrl = validateAndVerifyDns(headInfo.resolvedUrl)
         }
 
-        val kind = classifyMimeType(headInfo.mimeType, targetUrl)
+        var kind = classifyMimeType(headInfo.mimeType, headInfo.fileName)
+        if (kind == DetectedMediaKind.OTHER) {
+            kind = classifyMimeType(headInfo.mimeType, targetUrl)
+        }
         if (kind == DetectedMediaKind.OTHER) {
             throw IllegalArgumentException(
                 "Unsupported content type (${headInfo.mimeType}). Provide a direct video, image, or audio link."
@@ -240,40 +276,53 @@ class DirectMediaFetcher(
         info: ProbedMediaInfo,
         onProgress: (bytesRead: Long, totalBytes: Long) -> Unit,
     ): ProbedMediaInfo = withContext(Dispatchers.IO) {
-        val url = info.sourceUrl ?: throw IllegalStateException("No remote URL to download.")
+        val rawUrl = info.sourceUrl ?: throw IllegalStateException("No remote URL to download.")
+        val url = validateAndVerifyDns(rawUrl)
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", HONEST_USER_AGENT)
+            .header("Accept", "*/*")
             .get()
             .build()
 
         val cacheDir = File(context.cacheDir, "fetched_media").apply { mkdirs() }
         val outFile = File(cacheDir, "${System.currentTimeMillis()}_${MediaStoreSaver.sanitizeFileName(info.fileName)}")
+        var resolvedMime = info.mimeType
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException(mapHttpError(response.code))
-            }
-            val body = response.body ?: throw IllegalStateException("Empty response body from server.")
-            val total = body.contentLength().takeIf { it > 0L } ?: info.sizeBytes
+        try {
+            client.newCall(request).execute().use { response ->
+                validateAndVerifyDns(response.request.url.toString())
+                if (!response.isSuccessful) {
+                    throw IllegalStateException(mapHttpError(response.code))
+                }
+                val respMime = response.header("Content-Type")?.substringBefore(';')?.trim()?.lowercase(Locale.US)
+                if (!respMime.isNullOrBlank() && respMime != "application/octet-stream" && !respMime.startsWith("text/html")) {
+                    resolvedMime = respMime
+                }
+                val body = response.body ?: throw IllegalStateException("Empty response body from server.")
+                val total = body.contentLength().takeIf { it > 0L } ?: info.sizeBytes
 
-            body.byteStream().use { input ->
-                FileOutputStream(outFile).use { output ->
-                    val buffer = ByteArray(32 * 1024)
-                    var downloaded = 0L
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        coroutineContext.ensureActive()
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        onProgress(downloaded, total)
+                body.byteStream().use { input ->
+                    FileOutputStream(outFile).use { output ->
+                        val buffer = ByteArray(32 * 1024)
+                        var downloaded = 0L
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            coroutineContext.ensureActive()
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            onProgress(downloaded, total)
+                        }
+                        output.flush()
                     }
-                    output.flush()
                 }
             }
+        } catch (t: Throwable) {
+            outFile.delete()
+            throw t
         }
 
-        inspectLocalFile(context, outFile, info.sourceUrl, info.mimeType, info.fileName)
+        inspectLocalFile(context, outFile, url, resolvedMime, info.fileName)
     }
 
     suspend fun inspectLocalUri(context: Context, uri: Uri): ProbedMediaInfo = withContext(Dispatchers.IO) {
@@ -403,47 +452,99 @@ class DirectMediaFetcher(
     }
 
     private data class HeaderProbe(
+        val resolvedUrl: String,
         val mimeType: String,
         val contentLength: Long,
         val fileName: String,
     )
 
+    private fun validateAndVerifyDns(rawUrl: String): String {
+        val validated = when (val result = validateUrl(rawUrl)) {
+            is UrlValidationResult.Valid -> result.normalizedUrl
+            is UrlValidationResult.Rejected -> throw IllegalArgumentException(result.reason)
+        }
+        val host = validated.toHttpUrlOrNull()?.host
+            ?: throw IllegalArgumentException("URL must include a valid host name.")
+        val addresses = try {
+            InetAddress.getAllByName(host)
+        } catch (_: Exception) {
+            emptyArray()
+        }
+        if (addresses.any { it.isLoopbackAddress || it.isSiteLocalAddress || it.isLinkLocalAddress || it.isAnyLocalAddress }) {
+            throw IllegalArgumentException("Resolved host points to a private or loopback network address.")
+        }
+        return validated
+    }
+
     private fun requestProbeHeaders(url: String): HeaderProbe {
         val headReq = Request.Builder()
             .url(url)
             .header("User-Agent", HONEST_USER_AGENT)
+            .header("Accept", "*/*")
             .head()
             .build()
 
         client.newCall(headReq).execute().use { resp ->
+            val finalHeadUrl = resp.request.url.toString()
             if (resp.isSuccessful) {
-                return parseHeaderProbe(url, resp.header("Content-Type"), resp.header("Content-Length"), resp.header("Content-Disposition"))
+                return parseHeaderProbe(
+                    finalHeadUrl,
+                    resp.header("Content-Type"),
+                    resp.header("Content-Length"),
+                    resp.header("Content-Disposition"),
+                )
             }
-            if (resp.code == 405 || resp.code == 501) {
-                // Fallback to single-byte Range GET when HEAD is disabled by server
-                val rangeReq = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", HONEST_USER_AGENT)
-                    .header("Range", "bytes=0-0")
-                    .get()
-                    .build()
-                client.newCall(rangeReq).execute().use { rangeResp ->
-                    if (!rangeResp.isSuccessful) {
-                        throw IllegalStateException(mapHttpError(rangeResp.code))
-                    }
-                    val totalFromRange = rangeResp.header("Content-Range")
-                        ?.substringAfter('/', "")
-                        ?.toLongOrNull()
-                    val lengthHeader = totalFromRange?.toString() ?: rangeResp.header("Content-Length")
-                    return parseHeaderProbe(
-                        url,
-                        rangeResp.header("Content-Type"),
-                        lengthHeader,
-                        rangeResp.header("Content-Disposition"),
-                    )
-                }
+            if (resp.code == 400 || resp.code == 403 || resp.code == 405 || resp.code == 501) {
+                return probeWithGetFallback(url)
             }
             throw IllegalStateException(mapHttpError(resp.code))
+        }
+    }
+
+    private fun probeWithGetFallback(url: String): HeaderProbe {
+        // Fallback to single-byte Range GET when HEAD is disabled or rejected by signed GET URLs
+        val rangeReq = Request.Builder()
+            .url(url)
+            .header("User-Agent", HONEST_USER_AGENT)
+            .header("Accept", "*/*")
+            .header("Range", "bytes=0-0")
+            .get()
+            .build()
+        client.newCall(rangeReq).execute().use { rangeResp ->
+            if (rangeResp.isSuccessful) {
+                val totalFromRange = rangeResp.header("Content-Range")
+                    ?.substringAfter('/', "")
+                    ?.toLongOrNull()
+                val lengthHeader = totalFromRange?.toString() ?: rangeResp.header("Content-Length")
+                return parseHeaderProbe(
+                    rangeResp.request.url.toString(),
+                    rangeResp.header("Content-Type"),
+                    lengthHeader,
+                    rangeResp.header("Content-Disposition"),
+                )
+            }
+            if (rangeResp.code != 416 && rangeResp.code != 400) {
+                throw IllegalStateException(mapHttpError(rangeResp.code))
+            }
+        }
+
+        // Some origins reject Range headers completely; inspect headers via a plain GET and close immediately
+        val plainGetReq = Request.Builder()
+            .url(url)
+            .header("User-Agent", HONEST_USER_AGENT)
+            .header("Accept", "*/*")
+            .get()
+            .build()
+        client.newCall(plainGetReq).execute().use { getResp ->
+            if (!getResp.isSuccessful) {
+                throw IllegalStateException(mapHttpError(getResp.code))
+            }
+            return parseHeaderProbe(
+                getResp.request.url.toString(),
+                getResp.header("Content-Type"),
+                getResp.header("Content-Length"),
+                getResp.header("Content-Disposition"),
+            )
         }
     }
 
@@ -451,10 +552,12 @@ class DirectMediaFetcher(
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", HONEST_USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
             .get()
             .build()
         client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return null
+            val finalUrl = resp.request.url.toString()
             val body = resp.body ?: return null
             val bytes = body.byteStream().use { input ->
                 val out = ByteArray(MAX_HTML_PEEK_BYTES)
@@ -467,7 +570,7 @@ class DirectMediaFetcher(
                 out.copyOf(total)
             }
             val html = String(bytes, Charsets.UTF_8)
-            return extractOpenGraphMediaUrl(html)
+            return extractOpenGraphMediaUrl(html, baseUrl = finalUrl)
         }
     }
 
@@ -477,8 +580,7 @@ class DirectMediaFetcher(
         contentLengthHeader: String?,
         contentDisposition: String?,
     ): HeaderProbe {
-        val mime = contentTypeHeader?.substringBefore(';')?.trim()?.lowercase(Locale.US)
-            ?: inferMimeFromUrl(url)
+        val rawMime = contentTypeHeader?.substringBefore(';')?.trim()?.lowercase(Locale.US)
         val length = contentLengthHeader?.toLongOrNull() ?: -1L
         val dispName = contentDisposition?.let { disp ->
             Regex("""filename\*?=(?:UTF-8'')?"?([^";]+)"?""", RegexOption.IGNORE_CASE)
@@ -489,11 +591,23 @@ class DirectMediaFetcher(
         } catch (_: Exception) {
             null
         }
+        val inferredFromName = dispName?.let(::inferMimeFromUrl)?.takeIf { it != "application/octet-stream" }
+            ?: pathSegment?.let(::inferMimeFromUrl)?.takeIf { it != "application/octet-stream" }
+        val mime = when {
+            rawMime.isNullOrBlank() -> inferredFromName ?: inferMimeFromUrl(url)
+            rawMime == "application/octet-stream" && inferredFromName != null -> inferredFromName
+            else -> rawMime
+        }
         val ext = mimeToExtension(mime)
         val finalName = MediaStoreSaver.sanitizeFileName(
             dispName ?: pathSegment ?: "clipper_media_${System.currentTimeMillis()}.$ext"
         )
-        return HeaderProbe(mimeType = mime, contentLength = length, fileName = finalName)
+        return HeaderProbe(
+            resolvedUrl = url,
+            mimeType = mime,
+            contentLength = length,
+            fileName = finalName,
+        )
     }
 
     private fun estimateFrameRate(retriever: MediaMetadataRetriever, durationMs: Long): Float {

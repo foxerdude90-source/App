@@ -68,6 +68,12 @@ import com.example.ui.theme.StudioSnow
 import com.example.ui.theme.StudioWhite
 import kotlinx.coroutines.delay
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+
 @Composable
 fun ClipperTopBar(
     workspaceTitle: String,
@@ -81,9 +87,9 @@ fun ClipperTopBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.Start,
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -94,14 +100,14 @@ fun ClipperTopBar(
                         contentDescription = "Clipper logo",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(34.dp)
                             .clip(RoundedCornerShape(10.dp))
-                            .border(1.dp, StudioBorder, RoundedCornerShape(10.dp)),
+                            .border(0.75.dp, StudioBorder, RoundedCornerShape(10.dp)),
                     )
-                    Column {
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                         Text(
                             text = "Clipper",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                             color = InkObsidian,
                         )
                         Text(
@@ -111,35 +117,12 @@ fun ClipperTopBar(
                         )
                     }
                 }
-                Surface(
-                    color = ClipperEmeraldSoft,
-                    shape = CircleShape,
-                    border = BorderStroke(1.dp, ClipperEmerald.copy(alpha = 0.25f)),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(ClipperEmerald),
-                        )
-                        Text(
-                            text = "LOCAL ENGINE",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = ClipperEmerald,
-                        )
-                    }
-                }
             }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(StudioBorder)
-                    .padding(top = 1.dp),
+                    .background(StudioBorder.copy(alpha = 0.75f))
+                    .padding(top = 0.75.dp),
             )
         }
     }
@@ -153,13 +136,20 @@ fun StudioCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .shadow(
+                elevation = 2.dp,
+                shape = RoundedCornerShape(20.dp),
+                ambientColor = InkObsidian.copy(alpha = 0.04f),
+                spotColor = InkObsidian.copy(alpha = 0.05f),
+            ),
         color = containerColor,
-        shape = RoundedCornerShape(18.dp),
-        border = BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(0.75.dp, borderColor),
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             content = content,
         )
@@ -183,9 +173,13 @@ fun SectionHeader(
         ) {
             Box(
                 modifier = Modifier
-                    .size(width = 4.dp, height = 20.dp)
+                    .size(8.dp)
                     .clip(CircleShape)
-                    .background(accentColor),
+                    .background(
+                        Brush.linearGradient(
+                            listOf(accentColor, accentColor.copy(alpha = 0.55f))
+                        )
+                    ),
             )
             Text(
                 text = title,
@@ -212,12 +206,12 @@ fun TelemetryChip(
     Surface(
         modifier = modifier,
         color = containerColor,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, StudioBorder),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(0.75.dp, StudioBorder),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp),
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
                 text = label.uppercase(),
@@ -246,17 +240,33 @@ fun ChoicePill(
     accentSoft: Color = ClipperIndigoSoft,
     tag: String? = null,
 ) {
+    val bgColor by animateColorAsState(
+        targetValue = if (selected) accentSoft else StudioWhite,
+        animationSpec = tween(durationMillis = 180),
+        label = "pill_bg",
+    )
+    val strokeColor by animateColorAsState(
+        targetValue = if (selected) accentColor.copy(alpha = 0.65f) else StudioBorder,
+        animationSpec = tween(durationMillis = 180),
+        label = "pill_border",
+    )
+    val contentTint by animateColorAsState(
+        targetValue = if (selected) accentColor else InkObsidian,
+        animationSpec = tween(durationMillis = 180),
+        label = "pill_text",
+    )
+
     Surface(
         modifier = modifier
-            .defaultMinSize(minHeight = 48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .defaultMinSize(minHeight = 46.dp)
+            .clip(RoundedCornerShape(13.dp))
             .then(if (tag != null) Modifier.testTag(tag) else Modifier)
             .clickable(onClick = onClick),
-        color = if (selected) accentSoft else StudioWhite,
-        shape = RoundedCornerShape(12.dp),
+        color = bgColor,
+        shape = RoundedCornerShape(13.dp),
         border = BorderStroke(
-            width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) accentColor else StudioBorder,
+            width = if (selected) 1.dp else 0.75.dp,
+            color = strokeColor,
         ),
     ) {
         Row(
@@ -269,14 +279,14 @@ fun ChoicePill(
                     imageVector = icon,
                     contentDescription = null,
                     tint = if (selected) accentColor else InkSlate,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(17.dp),
                 )
                 Spacer(modifier = Modifier.width(6.dp))
             }
             Text(
                 text = text,
                 style = MaterialTheme.typography.labelLarge,
-                color = if (selected) accentColor else InkObsidian,
+                color = contentTint,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

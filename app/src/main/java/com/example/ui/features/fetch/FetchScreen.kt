@@ -1,12 +1,16 @@
 package com.example.ui.features.fetch
 
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,64 +23,71 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AudioFile
+import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.HighQuality
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.MusicNote
-import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.R
-import com.example.core.media.DetectedMediaKind
+import com.example.core.media.MediaQualityOption
 import com.example.core.media.MediaStoreSaver
-import com.example.core.media.VideoFpsPreset
-import com.example.core.media.VideoResolutionPreset
+import com.example.core.media.QualityTrackType
 import com.example.ui.components.ChoicePill
-import com.example.ui.components.ExoVideoPreview
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StudioCard
-import com.example.ui.components.StudioProgressBanner
 import com.example.ui.components.TelemetryChip
-import com.example.ui.theme.ClipperAmber
 import com.example.ui.theme.ClipperCyan
 import com.example.ui.theme.ClipperCyanSoft
 import com.example.ui.theme.ClipperEmerald
@@ -85,106 +96,127 @@ import com.example.ui.theme.ClipperIndigo
 import com.example.ui.theme.ClipperIndigoSoft
 import com.example.ui.theme.ClipperRose
 import com.example.ui.theme.ClipperRoseSoft
+import com.example.ui.theme.InkMuted
 import com.example.ui.theme.InkObsidian
 import com.example.ui.theme.InkSlate
 import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.StudioBorder
 import com.example.ui.theme.StudioSnow
 import com.example.ui.theme.StudioWhite
-import java.util.Locale
+import kotlin.math.roundToInt
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FetchScreen(
     viewModel: FetchViewModel,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
 
-    val mediaPicker = rememberLauncherForActivityResult(
+    val localVideoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
-        if (uri != null) {
-            viewModel.importLocalUri(uri)
-        }
+        if (uri != null) viewModel.importLocalFile(uri)
     }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(StudioWhite),
+            .background(StudioSnow),
         contentAlignment = Alignment.TopCenter,
     ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 720.dp),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {
                 SectionHeader(
                     title = stringResource(R.string.fetch_title),
                     subtitle = stringResource(R.string.fetch_subtitle),
-                    accentColor = ClipperCyan,
+                    accentColor = ClipperIndigo,
                 )
             }
 
-            // URL Input Card
+            // URL Input & Fetch Metadata Card
             item {
                 StudioCard {
+                    Text(
+                        text = "Media Link",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = InkObsidian,
+                    )
+
                     OutlinedTextField(
                         value = state.urlInput,
-                        onValueChange = viewModel::onUrlChange,
+                        onValueChange = viewModel::onUrlChanged,
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("fetch_url_input"),
-                        label = { Text("Direct Media URL") },
                         placeholder = {
                             Text(
                                 text = stringResource(R.string.fetch_url_placeholder),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = JetBrainsMono),
+                                color = InkMuted,
                             )
                         },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Outlined.Link,
-                                contentDescription = "Link icon",
-                                tint = ClipperCyan,
+                                contentDescription = null,
+                                tint = InkSlate,
                             )
                         },
                         trailingIcon = {
-                            IconButton(
-                                onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                    val pasted = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
-                                    if (!pasted.isNullOrBlank()) {
-                                        viewModel.onUrlChange(pasted.trim())
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (state.urlInput.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = viewModel::clearUrl,
+                                        modifier = Modifier.testTag("fetch_clear_url_button"),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Clear,
+                                            contentDescription = "Clear URL",
+                                            tint = InkSlate,
+                                        )
                                     }
-                                },
-                                modifier = Modifier.testTag("fetch_paste_button"),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.ContentPaste,
-                                    contentDescription = stringResource(R.string.action_paste),
-                                    tint = InkSlate,
-                                )
+                                } else {
+                                    IconButton(
+                                        onClick = {
+                                            clipboard.getText()?.text?.let(viewModel::onUrlChanged)
+                                        },
+                                        modifier = Modifier.testTag("fetch_paste_button"),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.ContentPaste,
+                                            contentDescription = stringResource(R.string.action_paste),
+                                            tint = ClipperIndigo,
+                                        )
+                                    }
+                                }
                             }
                         },
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = ClipperCyan,
-                            unfocusedBorderColor = StudioBorder,
-                            focusedContainerColor = StudioWhite,
-                            unfocusedContainerColor = StudioSnow,
-                        ),
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Uri,
-                            imeAction = ImeAction.Go,
+                            imeAction = ImeAction.Search,
                         ),
-                        keyboardActions = KeyboardActions(onGo = { viewModel.fetchUrl() }),
+                        keyboardActions = KeyboardActions(
+                            onSearch = {
+                                if (!state.isFetchingInfo && !state.isDownloading) {
+                                    viewModel.fetchMetadata()
+                                }
+                            },
+                        ),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ClipperIndigo,
+                            unfocusedBorderColor = StudioBorder,
+                            focusedContainerColor = StudioSnow,
+                            unfocusedContainerColor = StudioSnow,
+                        ),
                     )
 
                     Row(
@@ -192,104 +224,59 @@ fun FetchScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Button(
-                            onClick = viewModel::fetchUrl,
-                            enabled = !state.isProbing && !state.isProcessing && state.urlInput.isNotBlank(),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(50.dp)
-                                .testTag("fetch_submit_button"),
+                            onClick = viewModel::fetchMetadata,
+                            enabled = state.urlInput.isNotBlank() && !state.isFetchingInfo && !state.isDownloading,
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = ClipperIndigo,
                                 contentColor = StudioWhite,
                             ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp)
+                                .testTag("fetch_inspect_button"),
                         ) {
-                            if (state.isProbing) {
+                            if (state.isFetchingInfo) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(18.dp),
                                     color = StudioWhite,
                                     strokeWidth = 2.dp,
                                 )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("Fetching Info...")
                             } else {
                                 Icon(
-                                    imageVector = Icons.Rounded.Search,
+                                    imageVector = Icons.Outlined.Search,
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp),
                                 )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(stringResource(R.string.fetch_button))
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.fetch_button))
                         }
 
-                        OutlinedButton(
-                            onClick = {
-                                mediaPicker.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
-                            },
-                            enabled = !state.isProbing && !state.isProcessing,
-                            modifier = Modifier
-                                .height(50.dp)
-                                .testTag("fetch_import_local_button"),
-                            shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, StudioBorder),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.FolderOpen,
-                                contentDescription = null,
-                                tint = InkObsidian,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Device", color = InkObsidian)
-                        }
-                    }
-
-                    // Transparent Scope Info Pill
-                    Surface(
-                        color = StudioSnow,
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, StudioBorder),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.Top,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Info,
-                                contentDescription = null,
-                                tint = InkSlate,
+                        if (state.isFetchingInfo) {
+                            OutlinedButton(
+                                onClick = viewModel::cancelActiveTask,
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, StudioBorder),
                                 modifier = Modifier
-                                    .size(16.dp)
-                                    .padding(top = 2.dp),
-                            )
-                            Text(
-                                text = stringResource(R.string.fetch_policy_notice),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = InkSlate,
-                            )
+                                    .height(50.dp)
+                                    .testTag("fetch_cancel_info_button"),
+                            ) {
+                                Text(stringResource(R.string.action_cancel))
+                            }
                         }
                     }
-                }
-            }
-
-            // Progress Banner
-            if (state.isProcessing) {
-                item {
-                    StudioProgressBanner(
-                        label = state.progressLabel.ifBlank { "Processing media..." },
-                        progress = state.progress,
-                    )
                 }
             }
 
             // Error Card
-            state.errorMessage?.let { err ->
+            state.errorMessage?.let { error ->
                 item {
                     StudioCard(
                         containerColor = ClipperRoseSoft,
-                        borderColor = ClipperRose.copy(alpha = 0.3f),
+                        borderColor = ClipperRose.copy(alpha = 0.30f),
                     ) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -297,12 +284,12 @@ fun FetchScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.ErrorOutline,
-                                contentDescription = "Error",
+                                contentDescription = null,
                                 tint = ClipperRose,
                                 modifier = Modifier.size(20.dp),
                             )
                             Text(
-                                text = err,
+                                text = error,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = InkObsidian,
                             )
@@ -311,7 +298,285 @@ fun FetchScreen(
                 }
             }
 
-            // Saved Confirmation Card
+            // Fetched Media Metadata + Quality Selector + Download Card
+            state.metadata?.let { meta ->
+                item {
+                    StudioCard {
+                        // Thumbnail preview if provided by getInfo
+                        meta.thumbnailUrl?.let { thumb ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(16f / 9f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(StudioSnow),
+                            ) {
+                                AsyncImage(
+                                    model = thumb,
+                                    contentDescription = meta.title,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                )
+                                if (meta.durationSec > 0L) {
+                                    Surface(
+                                        color = InkObsidian.copy(alpha = 0.78f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(10.dp),
+                                    ) {
+                                        Text(
+                                            text = MediaStoreSaver.formatDurationMs(meta.durationSec * 1000L),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                            color = StudioWhite,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = meta.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = InkObsidian,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                meta.uploader?.let { uploader ->
+                                    TelemetryChip(
+                                        label = "Creator",
+                                        value = uploader.take(24),
+                                        accentColor = InkObsidian,
+                                        containerColor = StudioSnow,
+                                    )
+                                }
+                                meta.extractorName?.let { extractor ->
+                                    TelemetryChip(
+                                        label = "Source",
+                                        value = extractor,
+                                        accentColor = ClipperIndigo,
+                                        containerColor = ClipperIndigoSoft,
+                                    )
+                                }
+                                TelemetryChip(
+                                    label = "Streams",
+                                    value = "${meta.qualities.size} formats",
+                                    accentColor = ClipperCyan,
+                                    containerColor = ClipperCyanSoft,
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = StudioBorder)
+
+                        // Quality Selector Trigger Surface
+                        Text(
+                            text = stringResource(R.string.fetch_select_quality),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = InkSlate,
+                        )
+                        val chosen = state.selectedQuality
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .testTag("fetch_quality_selector_button")
+                                .clickable(enabled = !state.isDownloading) {
+                                    viewModel.openQualitySheet()
+                                },
+                            color = StudioSnow,
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, StudioBorder),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(ClipperIndigoSoft),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = if (chosen?.trackType == QualityTrackType.AUDIO) {
+                                                Icons.Outlined.MusicNote
+                                            } else {
+                                                Icons.Outlined.HighQuality
+                                            },
+                                            contentDescription = null,
+                                            tint = ClipperIndigo,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = chosen?.title ?: "Choose stream quality",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = InkObsidian,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = chosen?.subtitle ?: "Tap to browse video & audio streams",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = InkSlate,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    imageVector = Icons.Outlined.KeyboardArrowDown,
+                                    contentDescription = "Open quality sheet",
+                                    tint = InkSlate,
+                                )
+                            }
+                        }
+
+                        // Live Download Progress Section
+                        AnimatedVisibility(
+                            visible = state.isDownloading,
+                            enter = fadeIn() + expandVertically(),
+                            exit = fadeOut() + shrinkVertically(),
+                        ) {
+                            Surface(
+                                color = ClipperIndigoSoft.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(14.dp),
+                                border = BorderStroke(1.dp, ClipperIndigo.copy(alpha = 0.2f)),
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = if (state.downloadProgress >= 0f) {
+                                                "Downloading • ${(state.downloadProgress * 100f).roundToInt()}%"
+                                            } else {
+                                                "Preparing stream..."
+                                            },
+                                            style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMono),
+                                            color = ClipperIndigo,
+                                        )
+                                        if (state.downloadEtaSeconds > 0L) {
+                                            Text(
+                                                text = "ETA ${state.downloadEtaSeconds}s",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                                color = InkSlate,
+                                            )
+                                        }
+                                    }
+
+                                    if (state.downloadProgress >= 0f) {
+                                        LinearProgressIndicator(
+                                            progress = { state.downloadProgress.coerceIn(0f, 1f) },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(8.dp)
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .testTag("fetch_download_progress_bar"),
+                                            color = ClipperIndigo,
+                                            trackColor = StudioWhite,
+                                        )
+                                    } else {
+                                        LinearProgressIndicator(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(8.dp)
+                                                .clip(RoundedCornerShape(999.dp))
+                                                .testTag("fetch_download_progress_bar"),
+                                            color = ClipperIndigo,
+                                            trackColor = StudioWhite,
+                                        )
+                                    }
+
+                                    if (state.downloadStatusLine.isNotBlank()) {
+                                        Text(
+                                            text = state.downloadStatusLine,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                            color = InkSlate,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Download & Cancel Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Button(
+                                onClick = viewModel::startDownload,
+                                enabled = !state.isDownloading && state.selectedQuality != null,
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ClipperEmerald,
+                                    contentColor = StudioWhite,
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(52.dp)
+                                    .testTag("fetch_download_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(19.dp),
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (state.isDownloading) "Downloading..." else stringResource(R.string.fetch_download_video),
+                                )
+                            }
+
+                            if (state.isDownloading) {
+                                OutlinedButton(
+                                    onClick = viewModel::cancelActiveTask,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, ClipperRose.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .height(52.dp)
+                                        .testTag("fetch_cancel_download_button"),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Cancel,
+                                        contentDescription = "Cancel download",
+                                        tint = ClipperRose,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Saved Output Success Banner
             state.savedResult?.let { saved ->
                 item {
                     StudioCard(
@@ -324,7 +589,7 @@ fun FetchScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.CheckCircle,
-                                contentDescription = "Saved",
+                                contentDescription = null,
                                 tint = ClipperEmerald,
                                 modifier = Modifier.size(22.dp),
                             )
@@ -345,218 +610,243 @@ fun FetchScreen(
                 }
             }
 
-            // Live Preview & Export Controls
-            val media = state.probedMedia
-            if (media != null && media.localUri != null) {
-                item {
-                    StudioCard {
-                        Text(
-                            text = "Live Media Preview",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = InkObsidian,
-                        )
-                        when (media.kind) {
-                            DetectedMediaKind.VIDEO -> {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .aspectRatio(16f / 9f)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(InkObsidian),
-                                ) {
-                                    ExoVideoPreview(
-                                        mediaUri = media.localUri,
-                                        modifier = Modifier.fillMaxSize(),
-                                    )
-                                }
-                            }
-
-                            DetectedMediaKind.IMAGE -> {
-                                AsyncImage(
-                                    model = media.localUri,
-                                    contentDescription = media.fileName,
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(240.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(StudioSnow),
-                                )
-                            }
-
-                            DetectedMediaKind.AUDIO -> {
-                                Surface(
-                                    color = StudioSnow,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, StudioBorder),
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.AudioFile,
-                                                contentDescription = null,
-                                                tint = ClipperAmber,
-                                            )
-                                            Text(
-                                                text = media.fileName,
-                                                style = MaterialTheme.typography.titleSmall,
-                                                color = InkObsidian,
-                                            )
-                                        }
-                                        ExoVideoPreview(
-                                            mediaUri = media.localUri,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(84.dp)
-                                                .clip(RoundedCornerShape(10.dp)),
-                                        )
-                                    }
-                                }
-                            }
-
-                            DetectedMediaKind.OTHER -> Unit
+            // Local Video Audio Extractor Card (Secondary Convenience)
+            item {
+                StudioCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Local Video Audio Extractor",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = InkObsidian,
+                            )
+                            Text(
+                                text = "Pick any video from your device to extract clean M4A audio into Downloads.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = InkSlate,
+                            )
                         }
-
-                        // Real Inspected Telemetry
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        Spacer(modifier = Modifier.width(12.dp))
+                        OutlinedButton(
+                            onClick = {
+                                localVideoPicker.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
+                                )
+                            },
+                            enabled = !state.isDownloading && !state.isFetchingInfo,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, StudioBorder),
+                            modifier = Modifier.testTag("fetch_pick_local_button"),
                         ) {
-                            TelemetryChip(label = "Type", value = media.kind.name)
-                            TelemetryChip(label = "Size", value = MediaStoreSaver.formatByteSize(media.sizeBytes))
-                            if (media.width > 0 && media.height > 0) {
-                                TelemetryChip(label = "Resolution", value = "${media.width}×${media.height}")
-                            }
-                            if (media.durationMs > 0L) {
-                                TelemetryChip(label = "Duration", value = MediaStoreSaver.formatDurationMs(media.durationMs))
-                            }
-                            if (media.frameRate > 0f) {
-                                TelemetryChip(
-                                    label = "Frame Rate",
-                                    value = String.format(Locale.US, "%.0f fps", media.frameRate),
-                                )
-                            }
-                        }
-
-                        // Video Output Quality & FPS Options
-                        if (media.kind == DetectedMediaKind.VIDEO) {
-                            Text(
-                                text = "Output Quality",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = InkObsidian,
+                            Icon(
+                                imageVector = Icons.Outlined.VideoLibrary,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
                             )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                VideoResolutionPreset.entries.forEach { preset ->
-                                    ChoicePill(
-                                        text = preset.label,
-                                        selected = state.selectedResolution == preset,
-                                        onClick = { viewModel.onResolutionSelected(preset) },
-                                        accentColor = ClipperIndigo,
-                                        accentSoft = ClipperIndigoSoft,
-                                    )
-                                }
-                            }
-
-                            Text(
-                                text = "Target Frame Rate",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = InkObsidian,
-                            )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                VideoFpsPreset.entries.forEach { fps ->
-                                    ChoicePill(
-                                        text = fps.label,
-                                        selected = state.selectedFps == fps,
-                                        onClick = { viewModel.onFpsSelected(fps) },
-                                        accentColor = ClipperCyan,
-                                        accentSoft = ClipperCyanSoft,
-                                    )
-                                }
-                            }
-
-                            if (state.selectedResolution != VideoResolutionPreset.ORIGINAL ||
-                                state.selectedFps != VideoFpsPreset.ORIGINAL
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Text("Target Video Bitrate", style = MaterialTheme.typography.labelLarge)
-                                    Text(
-                                        text = String.format(Locale.US, "%.1f Mbps", state.targetBitrateMbps),
-                                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMono),
-                                        color = ClipperIndigo,
-                                    )
-                                }
-                                Slider(
-                                    value = state.targetBitrateMbps,
-                                    onValueChange = viewModel::onBitrateChanged,
-                                    valueRange = 1.0f..12.0f,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = ClipperIndigo,
-                                        activeTrackColor = ClipperIndigo,
-                                    ),
-                                )
-                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Import")
                         }
+                    }
 
-                        // Primary Export Actions
+                    state.localProbed?.let { local ->
+                        HorizontalDivider(color = StudioBorder)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Button(
-                                onClick = { viewModel.exportMedia(extractAudioOnly = false) },
-                                enabled = !state.isProcessing,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(52.dp)
-                                    .testTag("fetch_download_button"),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = ClipperIndigo),
-                            ) {
-                                Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(stringResource(R.string.fetch_download_video))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = local.fileName,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = InkObsidian,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = "${local.width}×${local.height} • ${MediaStoreSaver.formatDurationMs(local.durationMs)} • ${MediaStoreSaver.formatByteSize(local.sizeBytes)}",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                    color = InkSlate,
+                                )
                             }
-
-                            if (media.kind == DetectedMediaKind.VIDEO) {
-                                OutlinedButton(
-                                    onClick = { viewModel.exportMedia(extractAudioOnly = true) },
-                                    enabled = !state.isProcessing,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(52.dp)
-                                        .testTag("fetch_extract_audio_button"),
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.2.dp, ClipperAmber),
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.MusicNote,
-                                        contentDescription = null,
-                                        tint = ClipperAmber,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Audio M4A", color = InkObsidian)
-                                }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = viewModel::extractAudioFromLocalFile,
+                                enabled = !state.isDownloading,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = ClipperIndigo),
+                                modifier = Modifier.testTag("fetch_extract_audio_button"),
+                            ) {
+                                Icon(Icons.Outlined.AudioFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("M4A")
                             }
                         }
                     }
                 }
+            }
+
+            // Subtle Engine Notice
+            item {
+                Text(
+                    text = stringResource(R.string.fetch_policy_notice),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = InkMuted,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+            }
+        }
+    }
+
+    // Material 3 Quality Selector ModalBottomSheet
+    val meta = state.metadata
+    if (state.showQualitySheet && meta != null) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val filteredOptions = meta.qualities.filter { opt ->
+            state.qualityFilter == null || opt.trackType == state.qualityFilter ||
+                (state.qualityFilter == QualityTrackType.VIDEO && opt.trackType == QualityTrackType.AUTO)
+        }
+
+        ModalBottomSheet(
+            onDismissRequest = viewModel::dismissQualitySheet,
+            sheetState = sheetState,
+            containerColor = StudioWhite,
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            modifier = Modifier.testTag("quality_selector_sheet"),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "Select Download Quality",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = InkObsidian,
+                    )
+                    Text(
+                        text = meta.title,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = InkSlate,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // Filter pills: All / Video / Audio Only
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ChoicePill(
+                        text = "All",
+                        selected = state.qualityFilter == null,
+                        onClick = { viewModel.selectQualityFilter(null) },
+                        tag = "quality_filter_all",
+                    )
+                    ChoicePill(
+                        text = "Video",
+                        selected = state.qualityFilter == QualityTrackType.VIDEO,
+                        onClick = { viewModel.selectQualityFilter(QualityTrackType.VIDEO) },
+                        tag = "quality_filter_video",
+                    )
+                    ChoicePill(
+                        text = "Audio",
+                        selected = state.qualityFilter == QualityTrackType.AUDIO,
+                        onClick = { viewModel.selectQualityFilter(QualityTrackType.AUDIO) },
+                        tag = "quality_filter_audio",
+                    )
+                }
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(filteredOptions, key = { it.id }) { option ->
+                        QualityOptionRow(
+                            option = option,
+                            selected = state.selectedQuality?.id == option.id,
+                            onClick = { viewModel.selectQuality(option) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QualityOptionRow(
+    option: MediaQualityOption,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .testTag("quality_option_${option.id}")
+            .clickable(onClick = onClick),
+        color = if (selected) ClipperIndigoSoft else StudioSnow,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(
+            width = if (selected) 1.25.dp else 0.75.dp,
+            color = if (selected) ClipperIndigo else StudioBorder,
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Surface(
+                color = if (option.trackType == QualityTrackType.AUDIO) ClipperCyanSoft else ClipperIndigoSoft,
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    text = option.badge,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = JetBrainsMono,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = if (option.trackType == QualityTrackType.AUDIO) ClipperCyan else ClipperIndigo,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = option.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = InkObsidian,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = option.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = InkSlate,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Outlined.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = ClipperIndigo,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }

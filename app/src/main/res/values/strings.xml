@@ -3,9 +3,12 @@
     <string name="app_tagline">Offline-First Media Studio</string>
 
     <!-- Navigation Tabs -->
-    <string name="nav_fetch">Fetch</string>
-    <string name="nav_compress">Compress</string>
+    <string name="nav_fetch">Download</string>
+    <string name="nav_upscale">Upscale</string>
     <string name="nav_cutout">Cutout</string>
+    <string name="nav_voice">Voice</string>
+    <string name="nav_studio">Pro Lab</string>
+    <string name="nav_compress">Compress</string>
     <string name="nav_captions">Captions</string>
 
     <!-- Common -->
@@ -19,15 +22,21 @@
     <string name="action_copy">Copy</string>
     <string name="action_paste">Paste</string>
 
-    <!-- Fetch Screen -->
-    <string name="fetch_title">Direct Media Fetch</string>
-    <string name="fetch_subtitle">Inspect, preview, transcode, or extract audio from direct open-access media links or device files.</string>
-    <string name="fetch_url_placeholder">https://example.com/media/clip.mp4</string>
-    <string name="fetch_button">Fetch</string>
+    <!-- Fetch / Media Downloader Screen -->
+    <string name="fetch_title">Media Downloader</string>
+    <string name="fetch_subtitle">Inspect formats with yt-dlp getInfo, select video or audio quality, and save directly to Downloads with live progress.</string>
+    <string name="fetch_url_placeholder">Paste media URL (https://...)</string>
+    <string name="fetch_button">Fetch Info</string>
     <string name="fetch_local_button">Or Import Local File</string>
-    <string name="fetch_policy_notice">Clipper supports direct open-access HTTP/HTTPS media files (.mp4, .webm, .mov, .jpg, .png, .mp3) and local device files. Protected streaming platforms and anti-bot bypasses are not supported.</string>
-    <string name="fetch_download_video">Download &amp; Save</string>
+    <string name="fetch_policy_notice">Powered by bundled yt-dlp + FFmpeg engines on-device. Please ensure you have permission to download the media.</string>
+    <string name="fetch_download_video">Download to Downloads</string>
     <string name="fetch_extract_audio">Extract Audio (M4A)</string>
+    <string name="fetch_select_quality">Select Quality</string>
+
+    <!-- Upscale Screen -->
+    <string name="upscale_title">GPU Video Upscaler</string>
+    <string name="upscale_subtitle">16-tap Catmull-Rom super-resolution, bilateral denoise &amp; AMD FidelityFX CAS sharpening on GPU.</string>
+    <string name="upscale_start_button">Upscale &amp; Save Video</string>
 
     <!-- Compress Screen -->
     <string name="compress_title">Precision Compressor</string>
@@ -37,8 +46,8 @@
     <string name="compress_start">Compress &amp; Export</string>
 
     <!-- Cutout Screen -->
-    <string name="cutout_title">Background Studio</string>
-    <string name="cutout_subtitle">Offline AI portrait detection, CIELAB object segmentation, precision lasso, magic wand &amp; brush.</string>
+    <string name="cutout_title">AI Background Studio</string>
+    <string name="cutout_subtitle">Subject AI multi-object isolation, edge de-fringing, precision lasso, magic wand &amp; restore brush.</string>
     <string name="cutout_auto_portrait">AI Portrait</string>
     <string name="cutout_auto_object">Smart Object</string>
     <string name="cutout_tool_lasso">Lasso</string>
@@ -46,6 +55,14 @@
     <string name="cutout_tool_erase">Erase</string>
     <string name="cutout_tool_restore">Restore</string>
     <string name="cutout_export_png">Export PNG</string>
+
+    <!-- Voice Studio Screen -->
+    <string name="voice_title">Voice Studio &amp; Cloning</string>
+    <string name="voice_subtitle">16 studio voices, phrasing &amp; reliability tuning, plus real microphone &amp; audio-file acoustic voice cloning.</string>
+
+    <!-- Pro Lab Screen -->
+    <string name="studio_title">Pro Media Lab</string>
+    <string name="studio_subtitle">12 hardware-accelerated video, audio, compression, caption &amp; forensic engineering tools.</string>
 
     <!-- Captions Screen -->
     <string name="captions_title">Caption Studio</string>

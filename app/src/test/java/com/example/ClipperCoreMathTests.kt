@@ -53,6 +53,21 @@ class ClipperCoreMathTests {
     }
 
     @Test
+    fun openGraphExtractor_handlesReversedAttrsEntitiesAndRelativeUrls() {
+        val html = """<html><head><meta content="/media/clip.mp4?a=1&amp;b=2" property="og:video" /></head></html>"""
+        assertEquals(
+            "https://cdn.example.org/media/clip.mp4?a=1&b=2",
+            DirectMediaFetcher.extractOpenGraphMediaUrl(html, baseUrl = "https://cdn.example.org/watch/123"),
+        )
+    }
+
+    @Test
+    fun urlValidation_rejectsPrivateIpv6AndUnencodedQueryPasses() {
+        assertTrue(DirectMediaFetcher.validateUrl("http://[::1]/clip.mp4") is UrlValidationResult.Rejected)
+        assertTrue(DirectMediaFetcher.validateUrl("https://cdn.example.org/clip.mp4?tag=a|b") is UrlValidationResult.Valid)
+    }
+
+    @Test
     fun cielabDeltaE_behavesMathematically() {
         val white = 0xFFFFFFFF.toInt()
         val black = 0xFF000000.toInt()
@@ -202,4 +217,102 @@ class ClipperCoreMathTests {
         assertEquals(60, MediaStoreSaver.computeSavingsPercent(1000L, 400L))
         assertEquals(4, ImageCompressorEngine.computeInSampleSize(4000, 3000, 1000))
     }
+
+    @Test
+    fun youtubeDlQualityParser_deduplicatesResolutionsAndBuildsAudioMuxSelectors() {
+        val raw = listOf(
+            com.example.core.media.YoutubeDlMediaEngine.RawStreamDescriptor(
+                formatId = "137",
+                ext = "mp4",
+                vcodec = "avc1.640028",
+                acodec = "none",
+                width = 1920,
+                height = 1080,
+                fps = 30,
+                fileSizeBytes = 42_000_000L,
+            ),
+            com.example.core.media.YoutubeDlMediaEngine.RawStreamDescriptor(
+                formatId = "22",
+                ext = "mp4",
+                vcodec = "avc1.64001F",
+                acodec = "mp4a.40.2",
+                width = 1280,
+                height = 720,
+                fps = 30,
+                fileSizeBytes = 18_000_000L,
+            ),
+            com.example.core.media.YoutubeDlMediaEngine.RawStreamDescriptor(
+                formatId = "140",
+                ext = "m4a",
+                vcodec = "none",
+                acodec = "mp4a.40.2",
+                width = 0,
+                height = 0,
+                fps = 0,
+                fileSizeBytes = 4_200_000L,
+                formatNote = "128k",
+            ),
+        )
+        val options = com.example.core.media.YoutubeDlMediaEngine.buildQualityOptions(raw, hasFfmpeg = true)
+        assertTrue(options.any { it.id == "auto_best_mp4" })
+        assertTrue(options.any { it.id == "auto_best_audio" && it.extractAudioOnly })
+        val fhd = options.first { it.heightPx == 1080 }
+        assertTrue(fhd.requiresAudioMux)
+        assertTrue(fhd.formatSelector.contains("137+bestaudio"))
+        val hd = options.first { it.heightPx == 720 }
+        assertFalse(hd.requiresAudioMux)
+        assertEquals("22", hd.formatSelector)
+    }
+
+    @Test
+    fun videoUpscaler_computesEvenAlignedTargetDimensions() {
+        val (w2x, h2x) = com.example.core.upscale.VideoUpscalerEngine.computeTargetDimensions(
+            srcWidth = 640,
+            srcHeight = 360,
+            preset = com.example.core.upscale.UpscaleTargetPreset.SCALE_2X,
+        )
+        assertEquals(1280, w2x)
+        assertEquals(720, h2x)
+        assertEquals(0, w2x % 2)
+        assertEquals(0, h2x % 2)
+    }
+
+    @Test
+    fun proAudioDsp_softLimiterPreventsClippingAboveUnity() {
+        val linear = com.example.core.studio.ProAudioDspProcessor.dbToLinearGain(18f)
+        assertTrue(linear > 7.5f)
+        val limited = com.example.core.studio.ProAudioDspProcessor.processSample(
+            normalizedSample = 0.9f,
+            linearGain = linear,
+            envelope = 1.0f,
+            softLimiter = true,
+        )
+        assertTrue(limited <= 1.0f && limited > 0.85f)
+    }
+
+    @Test
+    fun voiceStudio_catalogHas16VoicesAndPitchTrackerDetectsSineF0() {
+        assertEquals(16, com.example.core.voice.VoicePresetCatalog.builtInVoices.size)
+
+        val sr = 22050
+        val targetHz = 140.0
+        val pcm = FloatArray(sr * 2) { i ->
+            (0.45 * kotlin.math.sin(2.0 * kotlin.math.PI * targetHz * i / sr)).toFloat()
+        }
+        val (profile, analysis) = com.example.core.voice.VoiceStudioDspEngine.analyzeVoiceSamplePcm(
+            samples = pcm,
+            sampleRate = sr,
+            voiceName = "Test Sine Clone",
+            sourceLabel = "UnitTest",
+        )
+        assertTrue(profile.isCloned)
+        assertEquals(targetHz.toFloat(), analysis.fundamentalHz, 6.0f)
+
+        val clauses = com.example.core.voice.VoiceStudioDspEngine.splitScriptIntoClauses(
+            script = "Hello world. Welcome back, ready to build!",
+            phrasing = com.example.core.voice.PhrasingStyle.NATURAL,
+        )
+        assertEquals(2, clauses.size)
+    }
 }
+

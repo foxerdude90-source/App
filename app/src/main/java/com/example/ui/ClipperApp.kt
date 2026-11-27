@@ -1,6 +1,12 @@
 package com.example.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -13,13 +19,15 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.Compress
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Hd
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.AutoFixHigh
-import androidx.compose.material.icons.outlined.Compress
-import androidx.compose.material.icons.outlined.Link
-import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.Hd
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -45,18 +53,23 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
 import com.example.ui.components.ClipperTopBar
-import com.example.ui.features.captions.CaptionsScreen
 import com.example.ui.features.captions.CaptionsViewModel
-import com.example.ui.features.compress.CompressScreen
 import com.example.ui.features.compress.CompressViewModel
 import com.example.ui.features.cutout.CutoutScreen
 import com.example.ui.features.cutout.CutoutViewModel
 import com.example.ui.features.fetch.FetchScreen
 import com.example.ui.features.fetch.FetchViewModel
+import com.example.ui.features.studio.StudioScreen
+import com.example.ui.features.studio.StudioViewModel
+import com.example.ui.features.upscale.UpscaleScreen
+import com.example.ui.features.upscale.UpscaleViewModel
+import com.example.ui.features.voice.VoiceScreen
+import com.example.ui.features.voice.VoiceViewModel
 import com.example.ui.theme.ClipperIndigo
 import com.example.ui.theme.ClipperIndigoSoft
 import com.example.ui.theme.InkSlate
 import com.example.ui.theme.StudioBorder
+import com.example.ui.theme.StudioSnow
 import com.example.ui.theme.StudioWhite
 
 enum class ClipperTab(
@@ -70,47 +83,57 @@ enum class ClipperTab(
     FETCH(
         routeId = "fetch",
         labelRes = R.string.nav_fetch,
-        workspaceSubtitle = "Direct Media Fetcher",
-        selectedIcon = Icons.Filled.Link,
-        unselectedIcon = Icons.Outlined.Link,
+        workspaceSubtitle = "Media Downloader",
+        selectedIcon = Icons.Filled.Download,
+        unselectedIcon = Icons.Outlined.Download,
         testTag = "nav_tab_fetch",
     ),
-    COMPRESS(
-        routeId = "compress",
-        labelRes = R.string.nav_compress,
-        workspaceSubtitle = "Video & Image Compressor",
-        selectedIcon = Icons.Filled.Compress,
-        unselectedIcon = Icons.Outlined.Compress,
-        testTag = "nav_tab_compress",
+    UPSCALE(
+        routeId = "upscale",
+        labelRes = R.string.nav_upscale,
+        workspaceSubtitle = "GPU Video Upscaler",
+        selectedIcon = Icons.Filled.Hd,
+        unselectedIcon = Icons.Outlined.Hd,
+        testTag = "nav_tab_upscale",
     ),
     CUTOUT(
         routeId = "cutout",
         labelRes = R.string.nav_cutout,
-        workspaceSubtitle = "Background Remover & Lasso",
+        workspaceSubtitle = "AI Background Studio",
         selectedIcon = Icons.Filled.AutoFixHigh,
         unselectedIcon = Icons.Outlined.AutoFixHigh,
         testTag = "nav_tab_cutout",
     ),
-    CAPTIONS(
-        routeId = "captions",
-        labelRes = R.string.nav_captions,
-        workspaceSubtitle = "10-Font Caption Studio",
-        selectedIcon = Icons.Filled.Subtitles,
-        unselectedIcon = Icons.Outlined.Subtitles,
-        testTag = "nav_tab_captions",
+    VOICE(
+        routeId = "voice",
+        labelRes = R.string.nav_voice,
+        workspaceSubtitle = "Voice Studio & Cloning",
+        selectedIcon = Icons.Filled.GraphicEq,
+        unselectedIcon = Icons.Outlined.GraphicEq,
+        testTag = "nav_tab_voice",
+    ),
+    STUDIO(
+        routeId = "studio",
+        labelRes = R.string.nav_studio,
+        workspaceSubtitle = "Pro Media Lab",
+        selectedIcon = Icons.Filled.Tune,
+        unselectedIcon = Icons.Outlined.Tune,
+        testTag = "nav_tab_studio",
     ),
 }
 
 @Composable
 fun ClipperApp(
     fetchViewModel: FetchViewModel = viewModel(),
-    compressViewModel: CompressViewModel = viewModel(),
+    upscaleViewModel: UpscaleViewModel = viewModel(),
     cutoutViewModel: CutoutViewModel = viewModel(),
+    voiceViewModel: VoiceViewModel = viewModel(),
+    studioViewModel: StudioViewModel = viewModel(),
+    compressViewModel: CompressViewModel = viewModel(),
     captionsViewModel: CaptionsViewModel = viewModel(),
 ) {
     var activeTab by rememberSaveable { mutableStateOf(ClipperTab.FETCH) }
 
-    // Return to primary Fetch studio when pressing Back from secondary tabs
     BackHandler(enabled = activeTab != ClipperTab.FETCH) {
         activeTab = ClipperTab.FETCH
     }
@@ -118,7 +141,7 @@ fun ClipperApp(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(StudioWhite),
+            .background(StudioSnow),
     ) {
         val useRail = maxWidth >= 600.dp
 
@@ -126,7 +149,7 @@ fun ClipperApp(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(StudioWhite)
+                    .background(StudioSnow)
                     .statusBarsPadding(),
             ) {
                 NavigationRail(
@@ -144,7 +167,12 @@ fun ClipperApp(
                                     contentDescription = stringResource(tab.labelRes),
                                 )
                             },
-                            label = { Text(stringResource(tab.labelRes)) },
+                            label = {
+                                Text(
+                                    text = stringResource(tab.labelRes),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            },
                             colors = NavigationRailItemDefaults.colors(
                                 selectedIconColor = ClipperIndigo,
                                 selectedTextColor = ClipperIndigo,
@@ -156,14 +184,17 @@ fun ClipperApp(
                         )
                     }
                 }
-                VerticalDivider(color = StudioBorder)
+                VerticalDivider(thickness = 0.75.dp, color = StudioBorder)
                 Column(modifier = Modifier.weight(1f)) {
                     ClipperTopBar(workspaceTitle = activeTab.workspaceSubtitle)
                     ClipperTabContent(
                         activeTab = activeTab,
                         fetchViewModel = fetchViewModel,
-                        compressViewModel = compressViewModel,
+                        upscaleViewModel = upscaleViewModel,
                         cutoutViewModel = cutoutViewModel,
+                        voiceViewModel = voiceViewModel,
+                        studioViewModel = studioViewModel,
+                        compressViewModel = compressViewModel,
                         captionsViewModel = captionsViewModel,
                         modifier = Modifier.weight(1f),
                     )
@@ -172,7 +203,7 @@ fun ClipperApp(
         } else {
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
-                containerColor = StudioWhite,
+                containerColor = StudioSnow,
                 contentWindowInsets = WindowInsets.safeDrawing,
                 topBar = {
                     ClipperTopBar(
@@ -182,7 +213,7 @@ fun ClipperApp(
                 },
                 bottomBar = {
                     Column(modifier = Modifier.background(StudioWhite)) {
-                        HorizontalDivider(color = StudioBorder)
+                        HorizontalDivider(thickness = 0.75.dp, color = StudioBorder)
                         NavigationBar(
                             containerColor = StudioWhite,
                             tonalElevation = 0.dp,
@@ -201,7 +232,8 @@ fun ClipperApp(
                                     label = {
                                         Text(
                                             text = stringResource(tab.labelRes),
-                                            style = MaterialTheme.typography.labelMedium,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
                                         )
                                     },
                                     colors = NavigationBarItemDefaults.colors(
@@ -221,8 +253,11 @@ fun ClipperApp(
                 ClipperTabContent(
                     activeTab = activeTab,
                     fetchViewModel = fetchViewModel,
-                    compressViewModel = compressViewModel,
+                    upscaleViewModel = upscaleViewModel,
                     cutoutViewModel = cutoutViewModel,
+                    voiceViewModel = voiceViewModel,
+                    studioViewModel = studioViewModel,
+                    compressViewModel = compressViewModel,
                     captionsViewModel = captionsViewModel,
                     modifier = Modifier
                         .fillMaxSize()
@@ -237,15 +272,34 @@ fun ClipperApp(
 private fun ClipperTabContent(
     activeTab: ClipperTab,
     fetchViewModel: FetchViewModel,
-    compressViewModel: CompressViewModel,
+    upscaleViewModel: UpscaleViewModel,
     cutoutViewModel: CutoutViewModel,
+    voiceViewModel: VoiceViewModel,
+    studioViewModel: StudioViewModel,
+    compressViewModel: CompressViewModel,
     captionsViewModel: CaptionsViewModel,
     modifier: Modifier = Modifier,
 ) {
-    when (activeTab) {
-        ClipperTab.FETCH -> FetchScreen(viewModel = fetchViewModel, modifier = modifier)
-        ClipperTab.COMPRESS -> CompressScreen(viewModel = compressViewModel, modifier = modifier)
-        ClipperTab.CUTOUT -> CutoutScreen(viewModel = cutoutViewModel, modifier = modifier)
-        ClipperTab.CAPTIONS -> CaptionsScreen(viewModel = captionsViewModel, modifier = modifier)
+    AnimatedContent(
+        targetState = activeTab,
+        transitionSpec = {
+            (fadeIn(tween(220)) + slideInVertically(tween(220)) { it / 32 })
+                .togetherWith(fadeOut(tween(150)))
+        },
+        label = "clipper_tab_transition",
+        modifier = modifier,
+    ) { tab ->
+        when (tab) {
+            ClipperTab.FETCH -> FetchScreen(viewModel = fetchViewModel, modifier = Modifier.fillMaxSize())
+            ClipperTab.UPSCALE -> UpscaleScreen(viewModel = upscaleViewModel, modifier = Modifier.fillMaxSize())
+            ClipperTab.CUTOUT -> CutoutScreen(viewModel = cutoutViewModel, modifier = Modifier.fillMaxSize())
+            ClipperTab.VOICE -> VoiceScreen(viewModel = voiceViewModel, modifier = Modifier.fillMaxSize())
+            ClipperTab.STUDIO -> StudioScreen(
+                viewModel = studioViewModel,
+                compressViewModel = compressViewModel,
+                captionsViewModel = captionsViewModel,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }

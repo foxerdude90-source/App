@@ -128,7 +128,7 @@ fun CutoutScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(StudioWhite),
+            .background(StudioSnow),
         contentAlignment = Alignment.TopCenter,
     ) {
         LazyColumn(
@@ -401,50 +401,160 @@ fun CutoutScreen(
                 }
             }
 
-            // One-Tap Auto Detection Card
+            // One-Tap AI Subject Background Removal Card
             item {
                 StudioCard {
-                    Text("Offline Auto Detection", style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("AI Background Remover", style = MaterialTheme.typography.titleMedium)
+                        state.activeEngineLabel?.let { engine ->
+                            Surface(
+                                color = ClipperEmeraldSoft,
+                                shape = CircleShape,
+                                border = BorderStroke(1.dp, ClipperEmerald.copy(alpha = 0.3f)),
+                            ) {
+                                Text(
+                                    text = engine,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ClipperEmerald,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    // Primary Hero Button: General-Purpose ML Kit Subject Segmentation (Any Object/Pet/Person)
+                    Button(
+                        onClick = viewModel::runAiSubjectDetect,
+                        enabled = state.sourceBitmap != null && !state.isProcessing,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp)
+                            .testTag("cutout_ai_subject_button"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = ClipperIndigo),
+                    ) {
+                        Icon(Icons.Outlined.AutoFixHigh, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("AI Remove Background (Any Subject)")
+                    }
+
+                    // Multi-Subject Isolation Chips (when ML Kit finds > 1 distinct subjects)
+                    if (state.detectedSubjects.size > 1) {
+                        Text(
+                            text = "Isolate Individual Subject",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = InkObsidian,
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            ChoicePill(
+                                text = "All (${state.detectedSubjects.size})",
+                                selected = state.selectedSubjectId == null,
+                                onClick = { viewModel.selectDetectedSubject(null) },
+                                accentColor = ClipperIndigo,
+                                accentSoft = ClipperIndigoSoft,
+                            )
+                            state.detectedSubjects.forEach { subject ->
+                                ChoicePill(
+                                    text = "${subject.label} (${subject.coveragePercent.toInt()}%)",
+                                    selected = state.selectedSubjectId == subject.id,
+                                    onClick = { viewModel.selectDetectedSubject(subject.id) },
+                                    accentColor = ClipperMagenta,
+                                    accentSoft = ClipperMagentaSoft,
+                                )
+                            }
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Button(
+                        OutlinedButton(
                             onClick = viewModel::runAiPortraitDetect,
                             enabled = state.sourceBitmap != null && !state.isProcessing,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(50.dp)
+                                .height(48.dp)
                                 .testTag("cutout_ai_portrait_button"),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ClipperIndigo),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, ClipperIndigo.copy(alpha = 0.45f)),
                         ) {
-                            Icon(Icons.Outlined.PersonSearch, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Outlined.PersonSearch, contentDescription = null, tint = ClipperIndigo, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.cutout_auto_portrait))
+                            Text(stringResource(R.string.cutout_auto_portrait), color = InkObsidian)
                         }
 
-                        Button(
+                        OutlinedButton(
                             onClick = viewModel::runSmartObjectDetect,
                             enabled = state.sourceBitmap != null && !state.isProcessing,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(50.dp)
+                                .height(48.dp)
                                 .testTag("cutout_smart_object_button"),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ClipperMagenta),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, ClipperMagenta.copy(alpha = 0.45f)),
                         ) {
-                            Icon(Icons.Outlined.Category, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Outlined.Category, contentDescription = null, tint = ClipperMagenta, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.cutout_auto_object))
+                            Text("Edge-Barrier", color = InkObsidian)
                         }
+                    }
+
+                    // Pro Mask Edge Refinement Controls
+                    Text("Edge Refinement", style = MaterialTheme.typography.labelLarge, color = InkObsidian)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ChoicePill(
+                            text = "Shrink -1px",
+                            selected = false,
+                            onClick = { viewModel.adjustMaskEdge(-1) },
+                            accentColor = ClipperCyan,
+                            accentSoft = ClipperCyanSoft,
+                        )
+                        ChoicePill(
+                            text = "Expand +1px",
+                            selected = false,
+                            onClick = { viewModel.adjustMaskEdge(1) },
+                            accentColor = ClipperCyan,
+                            accentSoft = ClipperCyanSoft,
+                        )
+                        ChoicePill(
+                            text = "Invert Mask",
+                            selected = false,
+                            onClick = viewModel::invertCurrentMask,
+                            accentColor = ClipperMagenta,
+                            accentSoft = ClipperMagentaSoft,
+                        )
+                        ChoicePill(
+                            text = if (state.decontaminateEdges) "De-Fringe ON" else "De-Fringe OFF",
+                            selected = state.decontaminateEdges,
+                            onClick = viewModel::toggleDecontaminateEdges,
+                            accentColor = ClipperEmerald,
+                            accentSoft = ClipperEmeraldSoft,
+                        )
+                        ChoicePill(
+                            text = if (state.autoCropExport) "Auto-Crop ON" else "Auto-Crop OFF",
+                            selected = state.autoCropExport,
+                            onClick = viewModel::toggleAutoCropExport,
+                            accentColor = ClipperIndigo,
+                            accentSoft = ClipperIndigoSoft,
+                        )
                     }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text("Object Sensitivity (CIELAB ΔE)", style = MaterialTheme.typography.labelLarge)
+                        Text("Edge-Barrier Sensitivity (ΔE)", style = MaterialTheme.typography.labelLarge)
                         Text(
                             text = "${state.objectSensitivity.toInt()}",
                             style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMono),
@@ -454,7 +564,7 @@ fun CutoutScreen(
                     Slider(
                         value = state.objectSensitivity,
                         onValueChange = viewModel::setObjectSensitivity,
-                        valueRange = 10f..65f,
+                        valueRange = 10f..60f,
                         colors = SliderDefaults.colors(thumbColor = ClipperMagenta, activeTrackColor = ClipperMagenta),
                     )
                 }
