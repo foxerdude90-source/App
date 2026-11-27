@@ -374,7 +374,137 @@ class ClipperCoreMathTests {
         assertEquals(sine.size, shifted.size)
         assertTrue(shifted.all { !it.isNaN() && kotlin.math.abs(it) <= 1.2f })
     }
+
+    @Test
+    fun batchQueueHelper_parsesSanitizesDeduplicatesAndComputesGlobalProgress() {
+        val rawInput = """
+            https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=track123
+            https://www.instagram.com/reel/C8xyz123/?igsh=MW9hZ2&fqnt=1
+            https://www.youtube.com/watch?v=dQw4w9WgXcQ&utm_source=copy
+            not_a_url
+        """.trimIndent()
+
+        val parsed = com.example.core.media.BatchQueueHelper.parseMultipleUrls(rawInput)
+        assertEquals(2, parsed.size)
+        assertEquals("https://www.youtube.com/watch?v=dQw4w9WgXcQ", parsed[0])
+        assertEquals("https://www.instagram.com/reel/C8xyz123/", parsed[1])
+
+        val items = listOf(
+            com.example.core.media.BatchQueueItem(
+                id = "1",
+                rawUrl = parsed[0],
+                sanitizedUrl = parsed[0],
+                status = com.example.core.media.BatchItemStatus.COMPLETED,
+                progress = 1f,
+            ),
+            com.example.core.media.BatchQueueItem(
+                id = "2",
+                rawUrl = parsed[1],
+                sanitizedUrl = parsed[1],
+                status = com.example.core.media.BatchItemStatus.DOWNLOADING,
+                progress = 0.5f,
+            ),
+            com.example.core.media.BatchQueueItem(
+                id = "3",
+                rawUrl = "https://example.org/video3.mp4",
+                sanitizedUrl = "https://example.org/video3.mp4",
+                status = com.example.core.media.BatchItemStatus.QUEUED,
+                progress = 0f,
+            ),
+            com.example.core.media.BatchQueueItem(
+                id = "4",
+                rawUrl = "https://example.org/video4.mp4",
+                sanitizedUrl = "https://example.org/video4.mp4",
+                status = com.example.core.media.BatchItemStatus.FAILED,
+                progress = 0f,
+            ),
+        )
+
+        val summary = com.example.core.media.BatchQueueHelper.computeSummary(items)
+        assertEquals(4, summary.totalCount)
+        assertEquals(1, summary.completedCount)
+        assertEquals(1, summary.failedCount)
+        assertEquals(1, summary.queuedCount)
+        assertEquals(2, summary.activeIndex)
+        // Item 1 (1.0) + Item 2 (0.12 + 0.88 * 0.5 = 0.56) + Item 3 (0.0) + Item 4 (1.0) = 2.56 / 4 = 0.64
+        assertEquals(0.64f, summary.globalProgress, 0.005f)
+    }
+
+    @Test
+    fun velocityCurveMath_monotoneHermiteSplineIsSmoothAndTimeIntegralIsExact() {
+        // Exact integral check: constant 2.0x speed halves duration; 0.5x doubles duration
+        val flat2x = listOf(
+            com.example.core.velocity.VelocityKeyframe("a", 0f, 2.0f),
+            com.example.core.velocity.VelocityKeyframe("b", 1f, 2.0f),
+        )
+        val lut2x = com.example.core.velocity.VelocityCurveMath.buildTimeRemapLut(flat2x, 10_000L)
+        assertEquals(5_000L, lut2x.totalOutputDurationMs)
+
+        val flatHalf = listOf(
+            com.example.core.velocity.VelocityKeyframe("a", 0f, 0.5f),
+            com.example.core.velocity.VelocityKeyframe("b", 1f, 0.5f),
+        )
+        val lutHalf = com.example.core.velocity.VelocityCurveMath.buildTimeRemapLut(flatHalf, 10_000L)
+        assertEquals(20_000L, lutHalf.totalOutputDurationMs)
+
+        // Monotone spline zero-overshoot & exact pass-through check
+        val hero = com.example.core.velocity.VelocityCurveMath.presetKeyframes(
+            com.example.core.velocity.VelocityCurvePreset.HERO,
+        )
+        val minSpd = hero.minOf { it.speed }
+        val maxSpd = hero.maxOf { it.speed }
+        val sampled = com.example.core.velocity.VelocityCurveMath.sampleCurveForDisplay(hero, samples = 120)
+        assertTrue(sampled.all { it >= minSpd - 0.01f && it <= maxSpd + 0.01f })
+        assertEquals(0.25f, com.example.core.velocity.VelocityCurveMath.evaluateSplineSpeed(hero, 0.42f), 0.01f)
+
+        // Auto velocity beat-synced curve stays gently paced within slow-mo and fast bounds
+        val beats = listOf(
+            com.example.core.velocity.DetectedBeat(1500L, 0.25f, 0.95f),
+            com.example.core.velocity.DetectedBeat(3000L, 0.50f, 1.00f),
+            com.example.core.velocity.DetectedBeat(4500L, 0.75f, 0.90f),
+        )
+        val settings = com.example.core.velocity.AutoVelocitySettings(
+            isAutoTuning = false,
+            frequency = com.example.core.velocity.AutoVelocityFrequency.EVERY_BEAT,
+            smoothness = 0.80f,
+            maxSlowMoSpeed = 0.30f,
+            maxFastSpeed = 2.60f,
+        )
+        val autoCurve = com.example.core.velocity.VelocityCurveMath.generateAutoVelocityCurve(beats, settings, bpm = 120f)
+        assertTrue(autoCurve.size >= 11)
+        assertTrue(autoCurve.all { it.speed in 0.29f..2.61f })
+    }
+
+    @Test
+    fun beatDetectionEngine_detects120BpmKickPulsesFromPcm() {
+        val sr = 22050
+        val durationSec = 6
+        val pcm = FloatArray(sr * durationSec)
+        // Synthesize crisp 120 BPM kick-drum pulses (1 beat every 0.50 seconds)
+        for (beatIdx in 0 until 12) {
+            val startSample = (beatIdx * 0.5 * sr).toInt()
+            val burstLen = (0.09 * sr).toInt()
+            for (i in 0 until burstLen) {
+                val idx = startSample + i
+                if (idx >= pcm.size) break
+                val env = kotlin.math.exp(-i.toDouble() / (0.025 * sr))
+                val freq = 130.0 - 70.0 * (i.toDouble() / burstLen)
+                pcm[idx] = (0.85 * env * kotlin.math.sin(2.0 * kotlin.math.PI * freq * i / sr)).toFloat()
+            }
+        }
+
+        val analysis = com.example.core.velocity.BeatDetectionEngine.analyzePcmForBeats(
+            samples = pcm,
+            sampleRate = sr,
+            durationMs = durationSec * 1000L,
+        )
+        assertEquals(96, analysis.waveformBars.size)
+        assertTrue("Expected at least 6 detected beats, got ${analysis.beats.size}", analysis.beats.size >= 6)
+        assertEquals(120f, analysis.bpm, 6.0f)
+    }
 }
+
+
 
 
 

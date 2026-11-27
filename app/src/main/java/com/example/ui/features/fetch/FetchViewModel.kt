@@ -4,8 +4,13 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.media.BatchItemStatus
+import com.example.core.media.BatchQualityPreset
+import com.example.core.media.BatchQueueHelper
+import com.example.core.media.BatchQueueItem
 import com.example.core.media.CookieSessionManager
 import com.example.core.media.DirectMediaFetcher
+import com.example.core.media.FetchWorkspaceMode
 import com.example.core.media.FetchedMediaMetadata
 import com.example.core.media.MediaQualityOption
 import com.example.core.media.MediaStoreSaver
@@ -21,11 +26,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
 
 data class FetchUiState(
+    val mode: FetchWorkspaceMode = FetchWorkspaceMode.SINGLE,
     val urlInput: String = "",
     val isFetchingInfo: Boolean = false,
     val metadata: FetchedMediaMetadata? = null,
@@ -39,6 +46,12 @@ data class FetchUiState(
     val savedResult: SavedMediaResult? = null,
     val errorMessage: String? = null,
     val showAuthPromptOnError: Boolean = false,
+    // Queue-based batch downloader state
+    val batchUrlInput: String = "",
+    val batchPreset: BatchQualityPreset = BatchQualityPreset.BEST_MP4,
+    val batchItems: List<BatchQueueItem> = emptyList(),
+    val isBatchRunning: Boolean = false,
+    val batchNotice: String? = null,
     // Optional WebView Cookie Manager state
     val hasSavedCookies: Boolean = false,
     val showCookieDialog: Boolean = false,
@@ -58,6 +71,12 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
     private val localInspector = DirectMediaFetcher()
     private var activeJob: Job? = null
     private var activeProcessId: String? = null
+    private var activeBatchJob: Job? = null
+    private var activeBatchProcessId: String? = null
+
+    fun selectMode(mode: FetchWorkspaceMode) {
+        _uiState.update { it.copy(mode = mode, batchNotice = null) }
+    }
 
     fun onUrlChanged(value: String) {
         _uiState.update { it.copy(urlInput = value, errorMessage = null) }
@@ -78,6 +97,16 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openCookieDialog() {
         val suggested = CookieSessionManager.suggestLoginUrlForMediaUrl(_uiState.value.urlInput)
+        _uiState.update {
+            it.copy(
+                showCookieDialog = true,
+                cookieDialogUrl = suggested,
+            )
+        }
+    }
+
+    fun openCookieDialogForUrl(url: String) {
+        val suggested = CookieSessionManager.suggestLoginUrlForMediaUrl(url)
         _uiState.update {
             it.copy(
                 showCookieDialog = true,
@@ -358,8 +387,297 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // --- Sequential Batch Queue Management ---
+
+    fun onBatchUrlInputChanged(value: String) {
+        _uiState.update { it.copy(batchUrlInput = value, batchNotice = null) }
+    }
+
+    fun selectBatchPreset(preset: BatchQualityPreset) {
+        _uiState.update { it.copy(batchPreset = preset) }
+    }
+
+    fun addUrlsToBatchQueue() {
+        val current = _uiState.value
+        val parsedUrls = BatchQueueHelper.parseMultipleUrls(current.batchUrlInput)
+        if (parsedUrls.isEmpty()) {
+            _uiState.update { it.copy(batchNotice = "Enter at least one valid media URL (one per line).") }
+            return
+        }
+
+        val activeOrQueuedUrls = current.batchItems
+            .filter {
+                it.status == BatchItemStatus.QUEUED ||
+                    it.status == BatchItemStatus.FETCHING_INFO ||
+                    it.status == BatchItemStatus.DOWNLOADING
+            }
+            .map { it.sanitizedUrl }
+            .toSet()
+
+        val newItems = parsedUrls
+            .filterNot { it in activeOrQueuedUrls }
+            .map { sanitized ->
+                BatchQueueItem(
+                    rawUrl = sanitized,
+                    sanitizedUrl = sanitized,
+                    preset = current.batchPreset,
+                )
+            }
+
+        if (newItems.isEmpty()) {
+            _uiState.update {
+                it.copy(
+                    batchUrlInput = "",
+                    batchNotice = "Those URLs are already waiting in the queue.",
+                )
+            }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                batchUrlInput = "",
+                batchItems = it.batchItems + newItems,
+                batchNotice = null,
+            )
+        }
+    }
+
+    fun removeBatchItem(itemId: String) {
+        _uiState.update { state ->
+            state.copy(
+                batchItems = state.batchItems.filterNot { item ->
+                    item.id == itemId &&
+                        item.status != BatchItemStatus.FETCHING_INFO &&
+                        item.status != BatchItemStatus.DOWNLOADING
+                },
+            )
+        }
+    }
+
+    fun retryFailedBatchItems() {
+        if (_uiState.value.isBatchRunning) return
+        _uiState.update { state ->
+            state.copy(
+                batchItems = state.batchItems.map { item ->
+                    if (item.status == BatchItemStatus.FAILED || item.status == BatchItemStatus.CANCELLED) {
+                        item.copy(
+                            status = BatchItemStatus.QUEUED,
+                            progress = 0f,
+                            etaSeconds = -1L,
+                            statusDetail = "Waiting in queue",
+                            errorMessage = null,
+                            requiresAuth = false,
+                        )
+                    } else {
+                        item
+                    }
+                },
+                batchNotice = null,
+            )
+        }
+    }
+
+    fun clearCompletedBatchItems() {
+        if (_uiState.value.isBatchRunning) return
+        _uiState.update { state ->
+            state.copy(batchItems = state.batchItems.filterNot { it.status == BatchItemStatus.COMPLETED })
+        }
+    }
+
+    fun clearAllBatchItems() {
+        if (_uiState.value.isBatchRunning) return
+        _uiState.update { it.copy(batchItems = emptyList(), batchNotice = null) }
+    }
+
+    fun startBatchQueue() {
+        if (_uiState.value.isBatchRunning) return
+
+        // Promote any previously cancelled items back to QUEUED so pressing Start resumes them
+        _uiState.update { state ->
+            state.copy(
+                batchItems = state.batchItems.map { item ->
+                    if (item.status == BatchItemStatus.CANCELLED) {
+                        item.copy(
+                            status = BatchItemStatus.QUEUED,
+                            progress = 0f,
+                            etaSeconds = -1L,
+                            statusDetail = "Waiting in queue",
+                            errorMessage = null,
+                        )
+                    } else {
+                        item
+                    }
+                },
+                batchNotice = null,
+            )
+        }
+
+        if (_uiState.value.batchItems.none { it.status == BatchItemStatus.QUEUED }) return
+
+        activeBatchJob?.cancel()
+        activeBatchJob = viewModelScope.launch {
+            _uiState.update { it.copy(isBatchRunning = true) }
+            try {
+                while (isActive) {
+                    val nextItem = _uiState.value.batchItems.firstOrNull {
+                        it.status == BatchItemStatus.QUEUED
+                    } ?: break
+
+                    updateBatchItem(nextItem.id) {
+                        it.copy(
+                            status = BatchItemStatus.FETCHING_INFO,
+                            progress = -1f,
+                            etaSeconds = -1L,
+                            statusDetail = "Fetching metadata...",
+                            errorMessage = null,
+                            requiresAuth = false,
+                        )
+                    }
+
+                    // Resolve title via getInfo first (falls back cleanly if direct stream URL)
+                    var resolvedTitle: String? = nextItem.title
+                    var authErrorFromInfo: Throwable? = null
+                    try {
+                        val info = YoutubeDlMediaEngine.fetchMediaMetadata(
+                            context = getApplication(),
+                            rawUrl = nextItem.sanitizedUrl,
+                        )
+                        resolvedTitle = info.title
+                    } catch (ce: CancellationException) {
+                        updateBatchItem(nextItem.id) {
+                            it.copy(status = BatchItemStatus.CANCELLED, statusDetail = "Stopped by user")
+                        }
+                        throw ce
+                    } catch (t: Throwable) {
+                        if (CookieSessionManager.isAuthOrRateLimitError(t.message)) {
+                            authErrorFromInfo = t
+                        }
+                    }
+
+                    if (authErrorFromInfo != null) {
+                        updateBatchItem(nextItem.id) {
+                            it.copy(
+                                status = BatchItemStatus.FAILED,
+                                progress = 0f,
+                                etaSeconds = -1L,
+                                statusDetail = "Authentication required",
+                                errorMessage = formatFriendlyError(authErrorFromInfo),
+                                requiresAuth = true,
+                            )
+                        }
+                        continue
+                    }
+
+                    val processId = "clipper_batch_${UUID.randomUUID()}"
+                    activeBatchProcessId = processId
+
+                    updateBatchItem(nextItem.id) {
+                        it.copy(
+                            title = resolvedTitle ?: it.title,
+                            status = BatchItemStatus.DOWNLOADING,
+                            progress = 0f,
+                            etaSeconds = -1L,
+                            statusDetail = "Starting download...",
+                        )
+                    }
+
+                    try {
+                        val quality = BatchQueueHelper.presetToQualityOption(nextItem.preset)
+                        val saved = YoutubeDlMediaEngine.downloadMediaToDownloads(
+                            context = getApplication(),
+                            originalUrl = nextItem.sanitizedUrl,
+                            quality = quality,
+                            titleHint = resolvedTitle ?: "clipper_batch",
+                            processId = processId,
+                            onProgress = { update ->
+                                updateBatchItem(nextItem.id) { currentItem ->
+                                    currentItem.copy(
+                                        progress = update.progressFraction,
+                                        etaSeconds = update.etaSeconds,
+                                        statusDetail = update.statusLine,
+                                    )
+                                }
+                            },
+                        )
+
+                        updateBatchItem(nextItem.id) {
+                            it.copy(
+                                status = BatchItemStatus.COMPLETED,
+                                progress = 1f,
+                                etaSeconds = 0L,
+                                statusDetail = "Saved to Downloads",
+                                savedResult = saved,
+                                errorMessage = null,
+                                requiresAuth = false,
+                            )
+                        }
+                    } catch (ce: CancellationException) {
+                        updateBatchItem(nextItem.id) {
+                            it.copy(
+                                status = BatchItemStatus.CANCELLED,
+                                statusDetail = "Stopped by user",
+                            )
+                        }
+                        throw ce
+                    } catch (t: Throwable) {
+                        val authNeeded = CookieSessionManager.isAuthOrRateLimitError(t.message)
+                        updateBatchItem(nextItem.id) {
+                            it.copy(
+                                status = BatchItemStatus.FAILED,
+                                progress = 0f,
+                                etaSeconds = -1L,
+                                statusDetail = "Download failed",
+                                errorMessage = formatFriendlyError(t),
+                                requiresAuth = authNeeded,
+                            )
+                        }
+                    } finally {
+                        if (activeBatchProcessId == processId) activeBatchProcessId = null
+                    }
+                }
+            } finally {
+                activeBatchProcessId = null
+                _uiState.update { it.copy(isBatchRunning = false) }
+            }
+        }
+    }
+
+    fun stopBatchQueue() {
+        activeBatchProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
+        activeBatchProcessId = null
+        activeBatchJob?.cancel()
+        activeBatchJob = null
+        _uiState.update { state ->
+            state.copy(
+                isBatchRunning = false,
+                batchItems = state.batchItems.map { item ->
+                    if (item.status == BatchItemStatus.FETCHING_INFO || item.status == BatchItemStatus.DOWNLOADING) {
+                        item.copy(
+                            status = BatchItemStatus.CANCELLED,
+                            statusDetail = "Stopped by user",
+                        )
+                    } else {
+                        item
+                    }
+                },
+            )
+        }
+    }
+
+    private fun updateBatchItem(itemId: String, transform: (BatchQueueItem) -> BatchQueueItem) {
+        _uiState.update { state ->
+            state.copy(
+                batchItems = state.batchItems.map { item ->
+                    if (item.id == itemId) transform(item) else item
+                },
+            )
+        }
+    }
+
     override fun onCleared() {
         activeProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
+        activeBatchProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
         super.onCleared()
     }
 }

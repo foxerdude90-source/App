@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Login
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Button
@@ -83,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.core.media.FetchWorkspaceMode
 import com.example.core.media.MediaQualityOption
 import com.example.core.media.MediaStoreSaver
 import com.example.core.media.QualityTrackType
@@ -131,7 +134,8 @@ fun FetchScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 720.dp),
+                .widthIn(max = 720.dp)
+                .testTag("fetch_lazy_column"),
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -143,6 +147,103 @@ fun FetchScreen(
                 )
             }
 
+            // Mode Switcher: Single URL vs Batch Queue (+ Session Cookies badge)
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ChoicePill(
+                        text = FetchWorkspaceMode.SINGLE.label,
+                        selected = state.mode == FetchWorkspaceMode.SINGLE,
+                        onClick = { viewModel.selectMode(FetchWorkspaceMode.SINGLE) },
+                        icon = Icons.Outlined.Link,
+                        tag = "fetch_mode_single",
+                    )
+                    val batchLabel = if (state.batchItems.isNotEmpty()) {
+                        "${FetchWorkspaceMode.BATCH.label} (${state.batchItems.size})"
+                    } else {
+                        FetchWorkspaceMode.BATCH.label
+                    }
+                    ChoicePill(
+                        text = batchLabel,
+                        selected = state.mode == FetchWorkspaceMode.BATCH,
+                        onClick = { viewModel.selectMode(FetchWorkspaceMode.BATCH) },
+                        icon = Icons.Outlined.QueueMusic,
+                        tag = "fetch_mode_batch",
+                    )
+                }
+            }
+
+            if (state.mode == FetchWorkspaceMode.BATCH) {
+                item {
+                    BatchAddUrlsCard(
+                        input = state.batchUrlInput,
+                        selectedPreset = state.batchPreset,
+                        isQueueRunning = state.isBatchRunning,
+                        onInputChange = viewModel::onBatchUrlInputChanged,
+                        onSelectPreset = viewModel::selectBatchPreset,
+                        onAddUrls = viewModel::addUrlsToBatchQueue,
+                    )
+                }
+
+                state.batchNotice?.let { notice ->
+                    item {
+                        StudioCard(
+                            containerColor = ClipperRoseSoft,
+                            borderColor = ClipperRose.copy(alpha = 0.30f),
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.ErrorOutline,
+                                    contentDescription = null,
+                                    tint = ClipperRose,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    text = notice,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = InkObsidian,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (state.batchItems.isNotEmpty()) {
+                    item {
+                        BatchGlobalProgressCard(
+                            items = state.batchItems,
+                            isRunning = state.isBatchRunning,
+                            onStartQueue = viewModel::startBatchQueue,
+                            onStopQueue = viewModel::stopBatchQueue,
+                            onRetryFailed = viewModel::retryFailedBatchItems,
+                            onClearCompleted = viewModel::clearCompletedBatchItems,
+                            onClearAll = viewModel::clearAllBatchItems,
+                        )
+                    }
+
+                    itemsIndexed(
+                        items = state.batchItems,
+                        key = { _, item -> item.id },
+                    ) { index, item ->
+                        BatchQueueItemCard(
+                            index = index,
+                            item = item,
+                            onRemove = { viewModel.removeBatchItem(item.id) },
+                            onOpenAuth = { viewModel.openCookieDialogForUrl(item.sanitizedUrl) },
+                        )
+                    }
+                } else {
+                    item {
+                        BatchEmptyQueueCard()
+                    }
+                }
+            } else {
             // URL Input & Fetch Metadata Card
             item {
                 StudioCard {
@@ -748,6 +849,7 @@ fun FetchScreen(
                         }
                     }
                 }
+            }
             }
 
             // Subtle Engine Notice

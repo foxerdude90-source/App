@@ -38,6 +38,7 @@ enum class StudioToolId(
     val subtitle: String,
     val tag: String,
 ) {
+    VELOCITY_STUDIO("Velocity Studio", "Beat-sync smooth slow-mo & custom CapCut curves", "studio_tool_velocity"),
     TRIMMER("Precision Trimmer", "Filmstrip frame-accurate clip cutter", "studio_tool_trimmer"),
     SPEED_RAMP("Speed & Slow-Mo", "0.25×–4× speed with Sonic pitch lock", "studio_tool_speed"),
     COLOR_GRADE("GPU Color Grader", "GLSL LUTs, exposure, contrast & vignette", "studio_tool_color"),

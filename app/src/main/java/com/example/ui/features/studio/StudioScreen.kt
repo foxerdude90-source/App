@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.MergeType
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
 import androidx.compose.material.icons.outlined.SystemUpdateAlt
@@ -79,6 +80,8 @@ import com.example.ui.features.captions.CaptionsScreen
 import com.example.ui.features.captions.CaptionsViewModel
 import com.example.ui.features.compress.CompressScreen
 import com.example.ui.features.compress.CompressViewModel
+import com.example.ui.features.velocity.VelocityScreen
+import com.example.ui.features.velocity.VelocityViewModel
 import com.example.ui.theme.ClipperAmber
 import com.example.ui.theme.ClipperAmberSoft
 import com.example.ui.theme.ClipperCyan
@@ -103,6 +106,7 @@ fun StudioScreen(
     viewModel: StudioViewModel,
     compressViewModel: CompressViewModel,
     captionsViewModel: CaptionsViewModel,
+    velocityViewModel: VelocityViewModel,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -134,7 +138,18 @@ fun StudioScreen(
             .fillMaxSize()
             .background(StudioSnow),
     ) { activeTool ->
-        if (activeTool == StudioToolId.COMPRESSOR) {
+        if (activeTool == StudioToolId.VELOCITY_STUDIO) {
+            Column(modifier = Modifier.fillMaxSize().background(StudioSnow)) {
+                Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                    ToolWorkspaceHeader(
+                        title = activeTool.title,
+                        subtitle = activeTool.subtitle,
+                        onBack = { viewModel.openTool(null) },
+                    )
+                }
+                VelocityScreen(viewModel = velocityViewModel, modifier = Modifier.weight(1f))
+            }
+        } else if (activeTool == StudioToolId.COMPRESSOR) {
             Column(modifier = Modifier.fillMaxSize().background(StudioSnow)) {
                 Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
                     ToolWorkspaceHeader(
@@ -301,7 +316,7 @@ fun StudioScreen(
                         StudioToolId.FRAME_GRABBER -> FrameGrabberWorkspace(state, viewModel)
                         StudioToolId.VIDEO_LOOPER -> VideoLooperWorkspace(state, viewModel)
                         StudioToolId.FORENSICS -> ForensicsWorkspace(state, viewModel)
-                        StudioToolId.COMPRESSOR, StudioToolId.CAPTIONS_STUDIO -> Unit
+                        StudioToolId.VELOCITY_STUDIO, StudioToolId.COMPRESSOR, StudioToolId.CAPTIONS_STUDIO -> Unit
                     }
                 }
             }
@@ -319,7 +334,7 @@ private fun ProLabHubGrid(
     onSelectTool: (StudioToolId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val tools = StudioToolId.entries
+    val tools = StudioToolId.entries.filterNot { it == StudioToolId.VELOCITY_STUDIO }
     val rows = tools.chunked(2)
 
     LazyColumn(
@@ -342,6 +357,13 @@ private fun ProLabHubGrid(
                 isUpdating = isUpdatingEngine,
                 result = engineUpdateResult,
                 onUpdateClick = onUpdateEngine,
+            )
+        }
+
+        // Featured Velocity Studio Launcher Card
+        item {
+            FeaturedVelocityToolCard(
+                onClick = { onSelectTool(StudioToolId.VELOCITY_STUDIO) },
             )
         }
 
@@ -456,7 +478,80 @@ private fun ToolWorkspaceHeader(
     }
 }
 
+@Composable
+private fun FeaturedVelocityToolCard(
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .testTag(StudioToolId.VELOCITY_STUDIO.tag)
+            .clickable(onClick = onClick),
+        color = StudioWhite,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.25.dp, ClipperIndigo.copy(alpha = 0.35f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(ClipperIndigoSoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.ShowChart,
+                    contentDescription = StudioToolId.VELOCITY_STUDIO.title,
+                    tint = ClipperIndigo,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = StudioToolId.VELOCITY_STUDIO.title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = InkObsidian,
+                    )
+                    Surface(
+                        color = ClipperCyanSoft,
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            text = "BEAT + CURVE",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                            color = ClipperCyan,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "Attach music, trim & crop video, auto-sync silky slow-mo to beats, or sculpt custom CapCut-style speed curves.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = InkSlate,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private fun toolVisualMeta(tool: StudioToolId): Triple<ImageVector, Color, Color> = when (tool) {
+    StudioToolId.VELOCITY_STUDIO -> Triple(Icons.Outlined.ShowChart, ClipperIndigo, ClipperIndigoSoft)
     StudioToolId.TRIMMER -> Triple(Icons.Outlined.ContentCut, ClipperIndigo, ClipperIndigoSoft)
     StudioToolId.SPEED_RAMP -> Triple(Icons.Outlined.Speed, ClipperCyan, ClipperCyanSoft)
     StudioToolId.COLOR_GRADE -> Triple(Icons.Outlined.ColorLens, ClipperMagenta, ClipperMagentaSoft)
