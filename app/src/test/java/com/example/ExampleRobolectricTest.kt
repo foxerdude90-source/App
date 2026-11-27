@@ -66,6 +66,7 @@ class ExampleRobolectricTest {
         // Default Media Downloader workspace
         composeTestRule.onNodeWithTag("fetch_url_input").assertIsDisplayed()
         composeTestRule.onNodeWithTag("fetch_inspect_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("fetch_cookies_button").assertIsDisplayed()
 
         // Switch to GPU Upscale workspace
         composeTestRule.onNodeWithTag("nav_tab_upscale").performClick()
@@ -85,7 +86,7 @@ class ExampleRobolectricTest {
         // Switch to Pro Media Lab workspace
         composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("studio_tool_trimmer").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("pro_lab_update_engine_button").assertIsDisplayed()
     }
 }
 

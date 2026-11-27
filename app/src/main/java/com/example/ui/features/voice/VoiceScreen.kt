@@ -466,7 +466,7 @@ fun VoiceScreen(
                         label = "Pitch Shift",
                         valueText = String.format(Locale.US, "%+.1f st", state.params.pitchSemitones),
                         value = state.params.pitchSemitones,
-                        range = -8f..8f,
+                        range = -6f..6f,
                         onValueChange = viewModel::updatePitch,
                     )
                     VoiceTuningSlider(

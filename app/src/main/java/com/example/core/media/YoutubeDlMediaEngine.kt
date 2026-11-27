@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.File
 import java.util.Locale
 
@@ -37,7 +38,7 @@ data class MediaQualityOption(
 )
 
 data class FetchedMediaMetadata(
-    val sourceUrl: String,
+    val sourceUrl: String, // Always the original sanitized page URL (never raw temporary stream URLs)
     val title: String,
     val uploader: String?,
     val durationSec: Long,
@@ -54,9 +55,25 @@ data class DownloadProgressUpdate(
     val statusLine: String,
 )
 
+enum class EngineUpdateOutcome {
+    DONE,
+    ALREADY_UP_TO_DATE,
+    ERROR,
+}
+
+data class EngineUpdateResult(
+    val outcome: EngineUpdateOutcome,
+    val message: String,
+)
+
 /**
  * Production on-device wrapper around `io.github.junkfood02.youtubedl-android` (yt-dlp + FFmpeg).
- * Uses exclusively the signed binaries bundled inside the APK (zero runtime binary self-updates).
+ *
+ * Includes:
+ *  - URL tracking parameter sanitization (strips `igsh`, `fqnt`, `si`, `utm_*`, etc.)
+ *  - Automatic Netscape `cookies.txt` attachment when present in `context.cacheDir`
+ *  - Long-video anti-403 reliability flags (`--rm-cache-dir`, `-4`, `youtube:player_client=web_embedded,web,tv`)
+ *  - Nightly engine updater (`YoutubeDL.UpdateChannel.NIGHTLY`)
  */
 object YoutubeDlMediaEngine {
 
@@ -65,6 +82,30 @@ object YoutubeDlMediaEngine {
     private var initialized = false
     @Volatile
     private var ffmpegReady = false
+
+    private val TRACKING_QUERY_PARAMS = setOf(
+        "igsh",
+        "igshid",
+        "fqnt",
+        "si",
+        "feature",
+        "pp",
+        "fbclid",
+        "gclid",
+        "dclid",
+        "msclkid",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "utm_id",
+        "ref",
+        "ref_src",
+        "ref_url",
+        "share_id",
+        "t_source",
+    )
 
     suspend fun ensureInitialized(context: Context) {
         if (initialized) return
@@ -104,19 +145,61 @@ object YoutubeDlMediaEngine {
     }
 
     /**
+     * Strips unnecessary tracking query parameters (`igsh`, `fqnt`, `si`, `utm_*`, etc.)
+     * while preserving essential video/media ID parameters (`v`, `t`, `list`, `index`, `id`, etc.).
+     */
+    fun sanitizeMediaUrl(rawUrl: String): String {
+        val normalized = normalizeAndValidateUrl(rawUrl)
+        val parsed = normalized.toHttpUrlOrNull() ?: return normalized
+        if (parsed.querySize == 0) return parsed.toString()
+
+        val builder = parsed.newBuilder().query(null)
+        for (i in 0 until parsed.querySize) {
+            val name = parsed.queryParameterName(i)
+            val value = parsed.queryParameterValue(i)
+            val lower = name.lowercase(Locale.US)
+            if (lower !in TRACKING_QUERY_PARAMS && !lower.startsWith("utm_")) {
+                builder.addQueryParameter(name, value)
+            }
+        }
+        return builder.build().toString()
+    }
+
+    /**
+     * Attaches anti-403 stability flags and automatic `cookies.txt` (if present and non-empty)
+     * to both `getInfo` and download `YoutubeDLRequest` instances.
+     */
+    private fun attachCommonReliabilityAndCookieOptions(
+        context: Context,
+        request: YoutubeDLRequest,
+    ) {
+        request.addOption("--rm-cache-dir")
+        request.addOption("-4")
+        request.addOption("--extractor-args", "youtube:player_client=web_embedded,web,tv")
+
+        val cookieFile = CookieSessionManager.cookieFile(context)
+        if (cookieFile.exists() && cookieFile.length() > 0L) {
+            request.addOption("--cookies", cookieFile.absolutePath)
+        }
+    }
+
+    /**
      * Fetches rich media metadata & available formats via `YoutubeDL.getInstance().getInfo(request)`.
+     * Always stores the original sanitized media URL in [FetchedMediaMetadata.sourceUrl] so
+     * subsequent downloads never rely on expiring direct CDN stream URLs.
      */
     suspend fun fetchMediaMetadata(
         context: Context,
         rawUrl: String,
     ): FetchedMediaMetadata = withContext(Dispatchers.IO) {
-        val cleanUrl = normalizeAndValidateUrl(rawUrl)
+        val sanitizedUrl = sanitizeMediaUrl(rawUrl)
         ensureInitialized(context)
 
-        val request = YoutubeDLRequest(cleanUrl).apply {
+        val request = YoutubeDLRequest(sanitizedUrl).apply {
             addOption("--no-playlist")
             addOption("--no-warnings")
             addOption("--socket-timeout", "20")
+            attachCommonReliabilityAndCookieOptions(context, this)
         }
 
         val info: VideoInfo = YoutubeDL.getInstance().getInfo(request)
@@ -144,7 +227,7 @@ object YoutubeDlMediaEngine {
         val safeTitle = info.title?.trim()?.takeIf { it.isNotBlank() } ?: "Media Clip"
 
         FetchedMediaMetadata(
-            sourceUrl = cleanUrl,
+            sourceUrl = sanitizedUrl,
             title = safeTitle,
             uploader = info.uploader?.trim()?.takeIf { it.isNotBlank() },
             durationSec = info.duration.toLong().coerceAtLeast(0L),
@@ -158,18 +241,19 @@ object YoutubeDlMediaEngine {
     }
 
     /**
-     * Executes `YoutubeDLRequest` in a coroutine, streams live progress, and saves the
-     * completed file cleanly into `Environment.DIRECTORY_DOWNLOADS` via MediaStore.
+     * Executes `YoutubeDLRequest` in a coroutine using the ORIGINAL sanitized media URL +
+     * selected `-f <format_selector>`, anti-403 flags, and automatic `cookies.txt` attachment.
+     * Saves the completed file into `Environment.DIRECTORY_DOWNLOADS`.
      */
     suspend fun downloadMediaToDownloads(
         context: Context,
-        url: String,
+        originalUrl: String,
         quality: MediaQualityOption,
         titleHint: String,
         processId: String,
         onProgress: (DownloadProgressUpdate) -> Unit,
     ): SavedMediaResult = withContext(Dispatchers.IO) {
-        val cleanUrl = normalizeAndValidateUrl(url)
+        val sanitizedUrl = sanitizeMediaUrl(originalUrl)
         ensureInitialized(context)
 
         val jobDir = File(context.cacheDir, "ytdl_job_${System.currentTimeMillis()}").apply {
@@ -178,13 +262,14 @@ object YoutubeDlMediaEngine {
 
         try {
             val outputTemplate = File(jobDir, "%(title).80B.%(ext)s").absolutePath
-            val request = YoutubeDLRequest(cleanUrl).apply {
+            val request = YoutubeDLRequest(sanitizedUrl).apply {
                 addOption("--no-playlist")
                 addOption("--no-mtime")
                 addOption("--newline")
                 addOption("--restrict-filenames")
                 addOption("-f", quality.formatSelector)
                 addOption("-o", outputTemplate)
+                attachCommonReliabilityAndCookieOptions(context, this)
 
                 if (quality.extractAudioOnly) {
                     if (ffmpegReady) {
@@ -192,9 +277,7 @@ object YoutubeDlMediaEngine {
                         addOption("--audio-format", "m4a")
                         addOption("--audio-quality", "0")
                     }
-                } else if (ffmpegReady && quality.requiresAudioMux) {
-                    addOption("--merge-output-format", "mp4")
-                } else if (ffmpegReady && quality.trackType == QualityTrackType.AUTO) {
+                } else if (ffmpegReady && (quality.requiresAudioMux || quality.trackType == QualityTrackType.AUTO)) {
                     addOption("--merge-output-format", "mp4")
                 }
             }
@@ -216,7 +299,6 @@ object YoutubeDlMediaEngine {
                 )
             }
 
-            // Locate the completed output media file inside jobDir (ignoring .part / .ytdl temp files)
             val downloadedFile = jobDir.listFiles()
                 ?.filter { file ->
                     file.isFile &&
@@ -247,6 +329,38 @@ object YoutubeDlMediaEngine {
         }
     }
 
+    /**
+     * Updates the yt-dlp engine via the official `NIGHTLY` channel on `Dispatchers.IO`.
+     */
+    suspend fun updateYtDlpEngine(context: Context): EngineUpdateResult = withContext(Dispatchers.IO) {
+        try {
+            ensureInitialized(context)
+            val status = YoutubeDL.getInstance().updateYoutubeDL(
+                context.applicationContext,
+                YoutubeDL.UpdateChannel.NIGHTLY,
+            )
+            when (status) {
+                YoutubeDL.UpdateStatus.DONE -> EngineUpdateResult(
+                    outcome = EngineUpdateOutcome.DONE,
+                    message = "DONE — Updated yt-dlp engine to the latest Nightly build.",
+                )
+                YoutubeDL.UpdateStatus.ALREADY_UP_TO_DATE -> EngineUpdateResult(
+                    outcome = EngineUpdateOutcome.ALREADY_UP_TO_DATE,
+                    message = "ALREADY_UP_TO_DATE — Your yt-dlp Nightly engine is current.",
+                )
+                null -> EngineUpdateResult(
+                    outcome = EngineUpdateOutcome.ERROR,
+                    message = "Engine updater returned no status. Check network connectivity.",
+                )
+            }
+        } catch (t: Throwable) {
+            EngineUpdateResult(
+                outcome = EngineUpdateOutcome.ERROR,
+                message = t.message?.take(180) ?: "Failed to update yt-dlp engine.",
+            )
+        }
+    }
+
     fun cancelDownload(processId: String) {
         runCatching {
             YoutubeDL.getInstance().destroyProcessById(processId)
@@ -265,7 +379,7 @@ object YoutubeDlMediaEngine {
                 sourceFile = sourceFile,
                 displayName = displayName,
                 mimeType = mimeType,
-                category = SaveCategory.DOCUMENT, // Environment.DIRECTORY_DOWNLOADS via MediaStore.Downloads
+                category = SaveCategory.DOCUMENT,
             )
         } else {
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -303,7 +417,6 @@ object YoutubeDlMediaEngine {
     ): List<MediaQualityOption> {
         val options = mutableListOf<MediaQualityOption>()
 
-        // 1. Recommended Auto Presets
         options.add(
             MediaQualityOption(
                 id = "auto_best_mp4",
@@ -334,7 +447,6 @@ object YoutubeDlMediaEngine {
             ),
         )
 
-        // 2. Deduplicated Video Formats (highest resolution first, preferring MP4/H264 or combined streams)
         val videoCandidates = formats.filter { fmt ->
             val hasVideo = fmt.vcodec != "none" && fmt.vcodec.isNotBlank() && fmt.height > 0
             val usable = hasFfmpeg || (fmt.acodec != "none" && fmt.acodec.isNotBlank())
@@ -392,7 +504,6 @@ object YoutubeDlMediaEngine {
                 )
             }
 
-        // 3. Dedicated Audio-Only Formats (top 3 distinct extensions)
         val audioCandidates = formats
             .filter { (it.vcodec == "none" || it.vcodec.isBlank()) && it.acodec != "none" && it.acodec.isNotBlank() }
             .sortedByDescending { it.fileSizeBytes }

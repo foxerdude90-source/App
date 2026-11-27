@@ -40,11 +40,13 @@ import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.material.icons.outlined.Cookie
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Link
+import androidx.compose.material.icons.outlined.Login
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -144,11 +146,47 @@ fun FetchScreen(
             // URL Input & Fetch Metadata Card
             item {
                 StudioCard {
-                    Text(
-                        text = "Media Link",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = InkObsidian,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Media Link",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = InkObsidian,
+                        )
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .testTag("fetch_cookies_button")
+                                .clickable(onClick = viewModel::openCookieDialog),
+                            color = if (state.hasSavedCookies) ClipperEmeraldSoft else StudioSnow,
+                            shape = RoundedCornerShape(999.dp),
+                            border = BorderStroke(
+                                width = 0.75.dp,
+                                color = if (state.hasSavedCookies) ClipperEmerald.copy(alpha = 0.45f) else StudioBorder,
+                            ),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Cookie,
+                                    contentDescription = "Session Cookies",
+                                    tint = if (state.hasSavedCookies) ClipperEmerald else InkSlate,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                                Text(
+                                    text = if (state.hasSavedCookies) "Session Active" else "Session Cookies",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (state.hasSavedCookies) ClipperEmerald else InkSlate,
+                                )
+                            }
+                        }
+                    }
 
                     OutlinedTextField(
                         value = state.urlInput,
@@ -271,7 +309,7 @@ fun FetchScreen(
                 }
             }
 
-            // Error Card
+            // Error Card (with inline "Sign in to authenticate" button on login / rate-limit errors)
             state.errorMessage?.let { error ->
                 item {
                     StudioCard(
@@ -293,6 +331,28 @@ fun FetchScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = InkObsidian,
                             )
+                        }
+                        if (state.showAuthPromptOnError) {
+                            Button(
+                                onClick = viewModel::openCookieDialog,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ClipperIndigo,
+                                    contentColor = StudioWhite,
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(46.dp)
+                                    .testTag("fetch_sign_in_auth_button"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Login,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Sign in to authenticate")
+                            }
                         }
                     }
                 }
@@ -779,6 +839,16 @@ fun FetchScreen(
                 }
             }
         }
+    }
+
+    // Optional In-App WebView Session Cookie Manager Dialog
+    if (state.showCookieDialog) {
+        CookieSessionDialog(
+            initialUrl = state.cookieDialogUrl,
+            hasSavedCookies = state.hasSavedCookies,
+            onDismiss = viewModel::dismissCookieDialog,
+            onCookiesChanged = viewModel::onCookiesUpdated,
+        )
     }
 }
 

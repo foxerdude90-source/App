@@ -6,10 +6,12 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.media.DirectMediaFetcher
+import com.example.core.media.EngineUpdateResult
 import com.example.core.media.MediaStoreSaver
 import com.example.core.media.ProbedMediaInfo
 import com.example.core.media.SaveCategory
 import com.example.core.media.SavedMediaResult
+import com.example.core.media.YoutubeDlMediaEngine
 import com.example.core.studio.AspectRatioPreset
 import com.example.core.studio.AudioDspConfig
 import com.example.core.studio.ColorGradeParams
@@ -104,6 +106,9 @@ data class StudioUiState(
     val progressLabel: String = "",
     val errorMessage: String? = null,
     val savedResult: SavedMediaResult? = null,
+    // Media Engine Updater (yt-dlp Nightly)
+    val isUpdatingEngine: Boolean = false,
+    val engineUpdateResult: EngineUpdateResult? = null,
 )
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
@@ -127,6 +132,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val video = _uiState.value.selectedVideo
         if (tool != null && video != null) {
             prepareToolDataForVideo(tool, video)
+        }
+    }
+
+    fun updateDownloadEngine() {
+        if (_uiState.value.isUpdatingEngine) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isUpdatingEngine = true,
+                    engineUpdateResult = null,
+                )
+            }
+            val result = YoutubeDlMediaEngine.updateYtDlpEngine(getApplication())
+            _uiState.update {
+                it.copy(
+                    isUpdatingEngine = false,
+                    engineUpdateResult = result,
+                )
+            }
         }
     }
 

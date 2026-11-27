@@ -314,5 +314,67 @@ class ClipperCoreMathTests {
         )
         assertEquals(2, clauses.size)
     }
+
+    @Test
+    fun urlSanitizer_stripsTrackingParamsWhilePreservingVideoIds() {
+        val ytRaw = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=abc123XYZ&t=42&utm_source=share"
+        assertEquals(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42",
+            com.example.core.media.YoutubeDlMediaEngine.sanitizeMediaUrl(ytRaw),
+        )
+
+        val igRaw = "https://www.instagram.com/reel/C8xyz123/?igsh=MW9hZ2&fqnt=1"
+        assertEquals(
+            "https://www.instagram.com/reel/C8xyz123/",
+            com.example.core.media.YoutubeDlMediaEngine.sanitizeMediaUrl(igRaw),
+        )
+    }
+
+    @Test
+    fun cookieManager_formatsNetscapeCookiesAndDetectsAuthErrors() {
+        val netscape = com.example.core.media.CookieSessionManager.convertRawCookiesToNetscape(
+            url = "https://www.instagram.com/accounts/login/",
+            rawCookieHeader = "sessionid=abc123; csrftoken=xyz789",
+            expirationEpochSec = 1893456000L,
+        )
+        assertTrue(netscape.startsWith("# Netscape HTTP Cookie File"))
+        assertTrue(netscape.contains(".instagram.com\tTRUE\t/\tTRUE\t1893456000\tsessionid\tabc123"))
+        assertTrue(netscape.contains(".instagram.com\tTRUE\t/\tTRUE\t1893456000\tcsrftoken\txyz789"))
+
+        assertTrue(com.example.core.media.CookieSessionManager.isAuthOrRateLimitError("ERROR: Login required to view this reel"))
+        assertTrue(com.example.core.media.CookieSessionManager.isAuthOrRateLimitError("HTTP Error 429: Too Many Requests rate-limit reached"))
+        assertFalse(com.example.core.media.CookieSessionManager.isAuthOrRateLimitError("Unable to resolve host"))
+    }
+
+    @Test
+    fun voiceStudioDspChain_isCleanAndWsolaPitchShiftPreservesSmoothness() {
+        val sr = 24000
+        val sine = FloatArray(sr) { i ->
+            (0.35 * kotlin.math.sin(2.0 * kotlin.math.PI * 220.0 * i / sr)).toFloat()
+        }
+        val voice = com.example.core.voice.VoicePresetCatalog.builtInVoices.first()
+        val mastered = com.example.core.voice.VoiceStudioDspEngine.applyVoiceStudioDspChain(
+            input = sine,
+            sampleRate = sr,
+            profile = voice,
+            params = com.example.core.voice.VoiceGenerationParams(),
+        )
+        assertEquals(sine.size, mastered.size)
+        // Verify zero NaN, bounded amplitude, and smooth sample-to-sample derivative (no crackle/clicks)
+        var maxDelta = 0f
+        for (i in 1 until mastered.size) {
+            assertFalse(mastered[i].isNaN())
+            assertTrue(kotlin.math.abs(mastered[i]) <= 0.96f)
+            val d = kotlin.math.abs(mastered[i] - mastered[i - 1])
+            if (d > maxDelta) maxDelta = d
+        }
+        assertTrue("Expected smooth crackle-free signal, got maxDelta=$maxDelta", maxDelta < 0.15f)
+
+        val shifted = com.example.core.voice.VoiceStudioDspEngine.pitchShiftWsola(sine, sr, semitones = 3.0f)
+        assertEquals(sine.size, shifted.size)
+        assertTrue(shifted.all { !it.isNaN() && kotlin.math.abs(it) <= 1.2f })
+    }
 }
+
+
 

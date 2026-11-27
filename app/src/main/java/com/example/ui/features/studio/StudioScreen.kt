@@ -44,7 +44,11 @@ import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -65,6 +69,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.core.media.EngineUpdateOutcome
+import com.example.core.media.EngineUpdateResult
 import com.example.core.media.MediaStoreSaver
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StudioCard
@@ -159,6 +165,9 @@ fun StudioScreen(
             ) {
                 if (activeTool == null) {
                     ProLabHubGrid(
+                        isUpdatingEngine = state.isUpdatingEngine,
+                        engineUpdateResult = state.engineUpdateResult,
+                        onUpdateEngine = viewModel::updateDownloadEngine,
                         onSelectTool = viewModel::openTool,
                         modifier = Modifier
                             .fillMaxSize()
@@ -304,6 +313,9 @@ fun StudioScreen(
 
 @Composable
 private fun ProLabHubGrid(
+    isUpdatingEngine: Boolean,
+    engineUpdateResult: EngineUpdateResult?,
+    onUpdateEngine: () -> Unit,
     onSelectTool: (StudioToolId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -322,6 +334,15 @@ private fun ProLabHubGrid(
                 accentColor = ClipperCyan,
             )
             Spacer(modifier = Modifier.height(4.dp))
+        }
+
+        // Media Engine Updater Card (yt-dlp Nightly Channel)
+        item {
+            EngineUpdaterCard(
+                isUpdating = isUpdatingEngine,
+                result = engineUpdateResult,
+                onUpdateClick = onUpdateEngine,
+            )
         }
 
         items(rows.size) { rowIndex ->
@@ -449,3 +470,112 @@ private fun toolVisualMeta(tool: StudioToolId): Triple<ImageVector, Color, Color
     StudioToolId.COMPRESSOR -> Triple(Icons.Outlined.Compress, ClipperAmber, ClipperAmberSoft)
     StudioToolId.CAPTIONS_STUDIO -> Triple(Icons.Outlined.Subtitles, ClipperIndigo, ClipperIndigoSoft)
 }
+
+@Composable
+private fun EngineUpdaterCard(
+    isUpdating: Boolean,
+    result: EngineUpdateResult?,
+    onUpdateClick: () -> Unit,
+) {
+    StudioCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ClipperIndigoSoft),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.SystemUpdateAlt,
+                        contentDescription = null,
+                        tint = ClipperIndigo,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Media Engine Updater",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = InkObsidian,
+                    )
+                    Text(
+                        text = "yt-dlp Nightly Channel • Fixes extractor changes",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = InkSlate,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Button(
+                onClick = onUpdateClick,
+                enabled = !isUpdating,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ClipperIndigo,
+                    contentColor = StudioWhite,
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                modifier = Modifier.testTag("pro_lab_update_engine_button"),
+            ) {
+                if (isUpdating) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = StudioWhite,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Updating...")
+                } else {
+                    Text("Update Engine")
+                }
+            }
+        }
+
+        result?.let { res ->
+            val (bg, fg, icon) = when (res.outcome) {
+                EngineUpdateOutcome.DONE -> Triple(ClipperEmeraldSoft, ClipperEmerald, Icons.Outlined.CheckCircle)
+                EngineUpdateOutcome.ALREADY_UP_TO_DATE -> Triple(ClipperCyanSoft, ClipperCyan, Icons.Outlined.CheckCircle)
+                EngineUpdateOutcome.ERROR -> Triple(ClipperRoseSoft, ClipperRose, Icons.Outlined.ErrorOutline)
+            }
+            Surface(
+                color = bg,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(0.75.dp, fg.copy(alpha = 0.25f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("pro_lab_engine_status_banner"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = fg,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = res.message,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono),
+                        color = InkObsidian,
+                    )
+                }
+            }
+        }
+    }
+}
+

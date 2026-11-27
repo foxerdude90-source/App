@@ -94,7 +94,7 @@ class VoiceViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updatePitch(semitones: Float) {
-        _uiState.update { it.copy(params = it.params.copy(pitchSemitones = semitones.coerceIn(-8f, 8f))) }
+        _uiState.update { it.copy(params = it.params.copy(pitchSemitones = semitones.coerceIn(-6f, 6f))) }
     }
 
     fun updateStability(stability: Float) {

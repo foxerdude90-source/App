@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.media.CookieSessionManager
 import com.example.core.media.DirectMediaFetcher
 import com.example.core.media.FetchedMediaMetadata
 import com.example.core.media.MediaQualityOption
@@ -37,13 +38,21 @@ data class FetchUiState(
     val downloadStatusLine: String = "",
     val savedResult: SavedMediaResult? = null,
     val errorMessage: String? = null,
+    val showAuthPromptOnError: Boolean = false,
+    // Optional WebView Cookie Manager state
+    val hasSavedCookies: Boolean = false,
+    val showCookieDialog: Boolean = false,
+    val cookieDialogUrl: String = "https://www.instagram.com/accounts/login/",
+    val cookieStatusMessage: String? = null,
     // Optional local file import / audio extraction support
     val localProbed: ProbedMediaInfo? = null,
 )
 
 class FetchViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _uiState = MutableStateFlow(FetchUiState())
+    private val _uiState = MutableStateFlow(
+        FetchUiState(hasSavedCookies = CookieSessionManager.hasSavedCookies(application)),
+    )
     val uiState: StateFlow<FetchUiState> = _uiState.asStateFlow()
 
     private val localInspector = DirectMediaFetcher()
@@ -61,7 +70,37 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                 metadata = null,
                 selectedQuality = null,
                 errorMessage = null,
+                showAuthPromptOnError = false,
                 savedResult = null,
+            )
+        }
+    }
+
+    fun openCookieDialog() {
+        val suggested = CookieSessionManager.suggestLoginUrlForMediaUrl(_uiState.value.urlInput)
+        _uiState.update {
+            it.copy(
+                showCookieDialog = true,
+                cookieDialogUrl = suggested,
+            )
+        }
+    }
+
+    fun dismissCookieDialog() {
+        _uiState.update {
+            it.copy(
+                showCookieDialog = false,
+                hasSavedCookies = CookieSessionManager.hasSavedCookies(getApplication()),
+            )
+        }
+    }
+
+    fun onCookiesUpdated(saved: Boolean, statusMessage: String) {
+        _uiState.update {
+            it.copy(
+                hasSavedCookies = saved,
+                cookieStatusMessage = statusMessage,
+                showAuthPromptOnError = if (saved) false else it.showAuthPromptOnError,
             )
         }
     }
@@ -102,6 +141,7 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     isFetchingInfo = true,
                     errorMessage = null,
+                    showAuthPromptOnError = false,
                     savedResult = null,
                     localProbed = null,
                     metadata = null,
@@ -120,10 +160,12 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
+                val authNeeded = CookieSessionManager.isAuthOrRateLimitError(t.message)
                 _uiState.update {
                     it.copy(
                         isFetchingInfo = false,
                         errorMessage = formatFriendlyError(t),
+                        showAuthPromptOnError = authNeeded,
                     )
                 }
             }
@@ -153,13 +195,14 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                     downloadEtaSeconds = -1L,
                     downloadStatusLine = "Initializing yt-dlp request...",
                     errorMessage = null,
+                    showAuthPromptOnError = false,
                     savedResult = null,
                 )
             }
             try {
                 val saved = YoutubeDlMediaEngine.downloadMediaToDownloads(
                     context = getApplication(),
-                    url = url,
+                    originalUrl = url,
                     quality = quality,
                     titleHint = metadata?.title ?: "media_download",
                     processId = processId,
@@ -192,11 +235,13 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 throw ce
             } catch (t: Throwable) {
+                val authNeeded = CookieSessionManager.isAuthOrRateLimitError(t.message)
                 _uiState.update {
                     it.copy(
                         isDownloading = false,
                         downloadProgress = -1f,
                         errorMessage = formatFriendlyError(t),
+                        showAuthPromptOnError = authNeeded,
                     )
                 }
             } finally {
