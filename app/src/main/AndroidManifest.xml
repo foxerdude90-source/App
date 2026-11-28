@@ -9,6 +9,10 @@
     <!-- Runtime permission requested only when user taps Voice Dictation in Captions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Foreground runtime location permissions requested when user enables Live Location in Maps -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
     <!-- Legacy MediaStore write permission restricted to Android 9 (API 28) and below -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"

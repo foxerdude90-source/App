@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
 import com.example.ui.components.ClipperTopBar
@@ -60,7 +61,10 @@ import com.example.ui.features.cutout.CutoutViewModel
 import com.example.ui.features.fetch.FetchScreen
 import com.example.ui.features.fetch.FetchViewModel
 import com.example.ui.features.image.ImageStudioViewModel
+import com.example.ui.features.maps.MapsScreen
+import com.example.ui.features.maps.MapsViewModel
 import com.example.ui.features.studio.StudioScreen
+import com.example.ui.features.studio.StudioToolId
 import com.example.ui.features.studio.StudioViewModel
 import com.example.ui.features.upscale.UpscaleScreen
 import com.example.ui.features.upscale.UpscaleViewModel
@@ -135,8 +139,23 @@ fun ClipperApp(
     captionsViewModel: CaptionsViewModel = viewModel(),
     velocityViewModel: VelocityViewModel = viewModel(),
     imageStudioViewModel: ImageStudioViewModel = viewModel(),
+    mapsViewModel: MapsViewModel = viewModel(),
 ) {
     var activeTab by rememberSaveable { mutableStateOf(ClipperTab.FETCH) }
+    val studioState by studioViewModel.uiState.collectAsStateWithLifecycle()
+    val isFullScreenMaps = activeTab == ClipperTab.STUDIO && studioState.activeTool == StudioToolId.MAPS
+
+    if (isFullScreenMaps) {
+        BackHandler {
+            studioViewModel.openTool(null)
+        }
+        MapsScreen(
+            viewModel = mapsViewModel,
+            onExitFullScreen = { studioViewModel.openTool(null) },
+            modifier = Modifier.fillMaxSize(),
+        )
+        return
+    }
 
     BackHandler(enabled = activeTab != ClipperTab.FETCH) {
         activeTab = ClipperTab.FETCH

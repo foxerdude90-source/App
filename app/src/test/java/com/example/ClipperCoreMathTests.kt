@@ -537,6 +537,67 @@ class ClipperCoreMathTests {
         assertEquals("#06B6D4", swatches[1].hex)
         assertEquals(25, swatches[1].sharePercent)
     }
+
+    @Test
+    fun mapsGeoMath_haversineAreaRouteSnapAndFormattingAreExact() {
+        val sf = com.example.core.maps.GeoPoint(37.7749, -122.4194)
+        val oakland = com.example.core.maps.GeoPoint(37.8044, -122.2712)
+        val distMeters = com.example.core.maps.MapsGeoMath.haversineMeters(sf, oakland)
+        assertTrue("Expected ~13.4 km between SF and Oakland, got $distMeters", distMeters in 13_000.0..14_000.0)
+
+        // Shortest-angle wraparound across 0°/360° boundary (350° -> 10° midpoint must be 0°)
+        assertEquals(0f, com.example.core.maps.MapsGeoMath.interpolateAngleDegrees(350f, 10f, 0.5f), 0.1f)
+        assertEquals(355f, com.example.core.maps.MapsGeoMath.interpolateAngleDegrees(350f, 10f, 0.25f), 0.1f)
+
+        // Spherical polygon area for a ~1km x ~1km square near the equator
+        val degPerKm = 1.0 / 111.195
+        val square = listOf(
+            com.example.core.maps.GeoPoint(0.0, 0.0),
+            com.example.core.maps.GeoPoint(0.0, degPerKm),
+            com.example.core.maps.GeoPoint(degPerKm, degPerKm),
+            com.example.core.maps.GeoPoint(degPerKm, 0.0),
+        )
+        val areaSqM = com.example.core.maps.MapsGeoMath.sphericalPolygonAreaSqMeters(square)
+        assertEquals(1_000_000.0, areaSqM, 15_000.0)
+
+        // Route snapping and off-route detection
+        val route = listOf(
+            com.example.core.maps.GeoPoint(37.7700, -122.4200),
+            com.example.core.maps.GeoPoint(37.7800, -122.4200),
+            com.example.core.maps.GeoPoint(37.7800, -122.4100),
+        )
+        val onRouteMatch = com.example.core.maps.MapsGeoMath.matchPointToRoute(
+            position = com.example.core.maps.GeoPoint(37.7750, -122.42005),
+            routeGeometry = route,
+            offRouteThresholdMeters = 55.0,
+        )
+        assertFalse(onRouteMatch.isOffRoute)
+        assertTrue(onRouteMatch.distanceFromRouteMeters < 10.0)
+        assertTrue(onRouteMatch.remainingDistanceMeters > 1000.0)
+
+        val offRouteMatch = com.example.core.maps.MapsGeoMath.matchPointToRoute(
+            position = com.example.core.maps.GeoPoint(37.7750, -122.4250),
+            routeGeometry = route,
+            offRouteThresholdMeters = 55.0,
+        )
+        assertTrue(offRouteMatch.isOffRoute)
+        assertTrue(offRouteMatch.distanceFromRouteMeters > 400.0)
+
+        // Direct coordinate parsing & DMS/unit formatting
+        val parsedCoord = com.example.core.maps.MapsGeoMath.tryParseDirectCoordinates("37.7749, -122.4194")
+        assertEquals(37.7749, parsedCoord!!.lat, 0.00001)
+        assertEquals(-122.4194, parsedCoord.lng, 0.00001)
+        assertEquals(null, com.example.core.maps.MapsGeoMath.tryParseDirectCoordinates("Golden Gate Bridge"))
+
+        val dms = com.example.core.maps.MapsGeoMath.formatCoordinatesDms(sf)
+        assertTrue(dms.contains("37°46'") && dms.contains("N") && dms.contains("122°25'") && dms.contains("W"))
+        assertEquals("2.5 km", com.example.core.maps.MapsGeoMath.formatDistance(2500.0, useImperial = false))
+        assertEquals("1.0 mi", com.example.core.maps.MapsGeoMath.formatDistance(1609.344, useImperial = true))
+        assertEquals("1.50 ha", com.example.core.maps.MapsGeoMath.formatArea(15_000.0, useImperial = false))
+        assertEquals(72 to "km/h", com.example.core.maps.MapsGeoMath.formatSpeed(20f, useImperial = false))
+        assertEquals("NE", com.example.core.maps.MapsGeoMath.compassCardinal(45f))
+        assertEquals("Turn right onto Market St", com.example.core.maps.MapsGeoMath.buildHumanInstruction("turn", "right", "Market St"))
+    }
 }
 
 

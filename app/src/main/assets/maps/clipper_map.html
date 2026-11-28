@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Clipper Maps 3D</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body, #map {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0b1120;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .maplibregl-ctrl-attrib {
+      font-size: 9px !important;
+      opacity: 0.72;
+      background: rgba(255, 255, 255, 0.72) !important;
+      border-radius: 6px !important;
+      margin: 4px !important;
+    }
+    .pin-marker {
+      width: 30px;
+      height: 30px;
+      border-radius: 50% 50% 50% 0;
+      background: linear-gradient(135deg, #4F46E5, #06B6D4);
+      transform: rotate(-45deg);
+      border: 2.5px solid #ffffff;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pin-marker::after {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ffffff;
+      transform: rotate(45deg);
+    }
+    .poi-dot {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: #0f172a;
+      border: 2px solid #06B6D4;
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+      cursor: pointer;
+    }
+    .poi-dot.ev { border-color: #10B981; background: #064E3B; }
+    .poi-dot.fuel { border-color: #F59E0B; background: #78350F; }
+    .poi-dot.food { border-color: #EC4899; background: #831843; }
+    .poi-dot.hospital { border-color: #EF4444; background: #7F1D1D; }
+    .poi-dot.parking { border-color: #6366F1; background: #312E81; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="https://unpkg.com/maplibre-gl@5.1.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/three@0.170.0/build/three.min.js"></script>
+  <script>
+    (function () {
+      const bridge = window.ClipperMapBridge || null;
+
+      function buildRasterStyle(tileUrls, attribution, withLabels, isDark) {
+        const sources = {
+          'base-raster': {
+            type: 'raster',
+            tiles: tileUrls,
+            tileSize: 256,
+            attribution: attribution
+          }
+        };
+        const layers = [
+          { id: 'bg', type: 'background', paint: { 'background-color': isDark ? '#090e1a' : '#e2e8f0' } },
+          { id: 'base-raster-layer', type: 'raster', source: 'base-raster', minzoom: 0, maxzoom: 20 }
+        ];
+        if (withLabels) {
+          sources['hybrid-labels'] = {
+            type: 'raster',
+            tiles: [
+              'https://a.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}@2x.png',
+              'https://b.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}@2x.png',
+              'https://c.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}@2x.png'
+            ],
+            tileSize: 256,
+            attribution: '© OpenStreetMap © CARTO'
+          };
+          layers.push({ id: 'hybrid-labels-layer', type: 'raster', source: 'hybrid-labels', minzoom: 0, maxzoom: 20 });
+        }
+        return { version: 8, sources, layers };
+      }
+
+      function getStyleSpec(styleId) {
+        switch (styleId) {
+          case 'bright':
+            return 'https://tiles.openfreemap.org/styles/bright';
+          case 'tesla_dark':
+            return 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+          case 'satellite':
+            return buildRasterStyle(
+              ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+              'Tiles © Esri — World Imagery',
+              true,
+              true
+            );
+          case 'topo_3d':
+            return buildRasterStyle(
+              [
+                'https://a.tile.opentopomap.org/{z}/{x}/{y}.png',
+                'https://b.tile.opentopomap.org/{z}/{x}/{y}.png',
+                'https://c.tile.opentopomap.org/{z}/{x}/{y}.png'
+              ],
+              '© OpenStreetMap contributors, SRTM | OpenTopoMap',
+              false,
+              false
+            );
+          case 'liberty':
+          default:
+            return 'https://tiles.openfreemap.org/styles/liberty';
+        }
+      }
+
+      const state = {
+        styleId: 'liberty',
+        terrain3d: false,
+        buildings3d: true,
+        globeMode: false,
+        cameraMode: 'FREE', // FREE | FOLLOW | TESLA_3D
+        measureActive: false,
+        hasLocation: false,
+        targetLng: -122.4194,
+        targetLat: 37.7749,
+        targetBearing: 0,
+        smoothLng: -122.4194,
+        smoothLat: 37.7749,
+        smoothBearing: 0,
+        accuracyM: 15,
+        speedMps: 0,
+        routes: [],
+        activeRouteIndex: 0,
+        breadcrumb: [],
+        measurePoints: [],
+        measureClosed: false,
+        pin: null,
+        pois: []
+      };
+
+      let pinMarker = null;
+      let poiMarkers = [];
+      let pressTimer = null;
+      let pressMoved = false;
+      let dashPhase = 0;
+
+      const map = new maplibregl.Map({
+        container: 'map',
+        style: getStyleSpec(state.styleId),
+        center: [state.targetLng, state.targetLat],
+        zoom: 14.2,
+        pitch: 45,
+        bearing: 0,
+        antialias: true,
+        maxPitch: 75,
+        attributionControl: true
+      });
+
+      // --- Three.js Procedural 3D Tesla-Style EV Vehicle Custom Layer ---
+      function createThreeVehicleLayer() {
+        return {
+          id: 'tesla-3d-vehicle',
+          type: 'custom',
+          renderingMode: '3d',
+          onAdd: function (m, gl) {
+            this.map = m;
+            if (typeof THREE === 'undefined') {
+              this.disabled = true;
+              return;
+            }
+            this.camera = new THREE.Camera();
+            this.scene = new THREE.Scene();
+
+            const ambient = new THREE.AmbientLight(0xffffff, 0.95);
+            this.scene.add(ambient);
+            const sun = new THREE.DirectionalLight(0xffffff, 1.35);
+            sun.position.set(40, -60, 120).normalize();
+            this.scene.add(sun);
+            const rim = new THREE.DirectionalLight(0x38bdf8, 0.85);
+            rim.position.set(-50, 40, 60).normalize();
+            this.scene.add(rim);
+
+            const car = new THREE.Group();
+
+            // Lower sculpted EV body (length along +Y = North at bearing 0)
+            const bodyMat = new THREE.MeshStandardMaterial({
+              color: 0xf8fafc,
+              metalness: 0.55,
+              roughness: 0.22
+            });
+            const lowerBody = new THREE.Mesh(new THREE.BoxGeometry(2.05, 4.75, 0.72), bodyMat);
+            lowerBody.position.set(0, 0, 0.58);
+            car.add(lowerBody);
+
+            // Tapered nose hood
+            const hood = new THREE.Mesh(new THREE.BoxGeometry(1.92, 1.35, 0.45), bodyMat);
+            hood.position.set(0, 1.85, 0.52);
+            car.add(hood);
+
+            // Panoramic dark glass cabin
+            const glassMat = new THREE.MeshStandardMaterial({
+              color: 0x0f172a,
+              metalness: 0.9,
+              roughness: 0.08
+            });
+            const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.74, 2.55, 0.62), glassMat);
+            cabin.position.set(0, -0.15, 1.16);
+            car.add(cabin);
+
+            // Glowing Cyan LED Headlight Bar (+Y front)
+            const headMat = new THREE.MeshBasicMaterial({ color: 0x22d3ee });
+            const headlight = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.14, 0.14), headMat);
+            headlight.position.set(0, 2.52, 0.62);
+            car.add(headlight);
+
+            // Glowing Crimson Rear Taillight Bar (-Y rear)
+            const tailMat = new THREE.MeshBasicMaterial({ color: 0xf43f5e });
+            const taillight = new THREE.Mesh(new THREE.BoxGeometry(1.84, 0.12, 0.14), tailMat);
+            taillight.position.set(0, -2.38, 0.74);
+            car.add(taillight);
+
+            // 4 Wheels
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7 });
+            const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 16);
+            wheelGeo.rotateZ(Math.PI / 2);
+            const wheelOffsets = [
+              [-1.02, 1.42, 0.36],
+              [1.02, 1.42, 0.36],
+              [-1.02, -1.38, 0.36],
+              [1.02, -1.38, 0.36]
+            ];
+            wheelOffsets.forEach(([x, y, z]) => {
+              const w = new THREE.Mesh(wheelGeo, wheelMat);
+              w.position.set(x, y, z);
+              car.add(w);
+            });
+
+            // Subtle glowing Tesla navigation halo ring underneath
+            const haloGeo = new THREE.RingGeometry(2.65, 3.25, 36);
+            const haloMat = new THREE.MeshBasicMaterial({
+              color: 0x38bdf8,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.55
+            });
+            const halo = new THREE.Mesh(haloGeo, haloMat);
+            halo.position.set(0, 0, 0.08);
+            car.add(halo);
+
+            this.carGroup = car;
+            this.scene.add(car);
+
+            this.renderer = new THREE.WebGLRenderer({
+              canvas: m.getCanvas(),
+              context: gl,
+              antialias: true
+            });
+            this.renderer.autoClear = false;
+          },
+          render: function (gl, args) {
+            if (this.disabled || !state.hasLocation || state.globeMode) return;
+            const matrixArray = args && args.defaultProjectionData
+              ? args.defaultProjectionData.mainMatrix
+              : args;
+            if (!matrixArray) return;
+
+            const merc = maplibregl.MercatorCoordinate.fromLngLat(
+              [state.smoothLng, state.smoothLat],
+              0
+            );
+            const meterScale = merc.meterInMercatorCoordinateUnits();
+            // Adaptive visual scale so the 3D EV car stays unmistakable at city & highway zooms
+            const zoom = this.map.getZoom();
+            const visualMult = Math.max(1.15, Math.min(18.0, Math.pow(2, 17.6 - zoom) * 1.35));
+            const scale = meterScale * visualMult;
+
+            const bearingRad = (-state.smoothBearing * Math.PI) / 180;
+            const rotZ = new THREE.Matrix4().makeRotationZ(bearingRad);
+
+            const m = new THREE.Matrix4().fromArray(matrixArray);
+            const l = new THREE.Matrix4()
+              .makeTranslation(merc.x, merc.y, merc.z || 0)
+              .scale(new THREE.Vector3(scale, -scale, scale))
+              .multiply(rotZ);
+
+            this.camera.projectionMatrix = m.multiply(l);
+            this.renderer.resetState();
+            this.renderer.render(this.scene, this.camera);
+          }
+        };
+      }
+
+      function shortestAngleDelta(fromDeg, toDeg) {
+        let diff = ((toDeg - fromDeg + 540) % 360) - 180;
+        if (diff < -180) diff += 360;
+        return diff;
+      }
+
+      function buildAccuracyCircleGeoJson(lng, lat, radiusMeters) {
+        const coords = [];
+        const earthR = 6378137.0;
+        const latRad = (lat * Math.PI) / 180;
+        const steps = 40;
+        const r = Math.max(4, Math.min(radiusMeters, 1500));
+        for (let i = 0; i <= steps; i++) {
+          const theta = (i / steps) * Math.PI * 2;
+          const dLat = (r * Math.cos(theta)) / earthR;
+          const dLng = (r * Math.sin(theta)) / (earthR * Math.cos(latRad));
+          coords.push([lng + (dLng * 180) / Math.PI, lat + (dLat * 180) / Math.PI]);
+        }
+        return {
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [coords] }, properties: {} }]
+        };
+      }
+
+      function buildHeadingConeGeoJson(lng, lat, bearingDeg) {
+        const earthR = 6378137.0;
+        const latRad = (lat * Math.PI) / 180;
+        const zoom = map.getZoom();
+        const coneLen = Math.max(22, Math.min(260, Math.pow(2, 17.5 - zoom) * 28));
+        const halfAngle = 22;
+        const pts = [[lng, lat]];
+        for (let a = -halfAngle; a <= halfAngle; a += 5.5) {
+          const rad = ((bearingDeg + a) * Math.PI) / 180;
+          const dLat = (coneLen * Math.cos(rad)) / earthR;
+          const dLng = (coneLen * Math.sin(rad)) / (earthR * Math.cos(latRad));
+          pts.push([lng + (dLng * 180) / Math.PI, lat + (dLat * 180) / Math.PI]);
+        }
+        pts.push([lng, lat]);
+        return {
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [pts] }, properties: {} }]
+        };
+      }
+
+      function ensureOverlayLayers() {
+        // 1. Optional 3D Terrain DEM (Free AWS Terrarium tiles)
+        if (!map.getSource('terrarium-dem')) {
+          map.addSource('terrarium-dem', {
+            type: 'raster-dem',
+            tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+            encoding: 'terrarium',
+            tileSize: 256,
+            maxzoom: 15
+          });
+        }
+        try {
+          if (state.terrain3d) {
+            map.setTerrain({ source: 'terrarium-dem', exaggeration: 1.35 });
+          } else {
+            map.setTerrain(null);
+          }
+        } catch (e) {}
+
+        // 2. Globe vs Mercator projection
+        try {
+          map.setProjection({ type: state.globeMode ? 'globe' : 'mercator' });
+        } catch (e) {}
+
+        // 3. 3D Buildings extrusion toggle on vector styles
+        const styleLayers = (map.getStyle() && map.getStyle().layers) || [];
+        let has3dBuilding = false;
+        styleLayers.forEach((layer) => {
+          if (layer.type === 'fill-extrusion') {
+            has3dBuilding = true;
+            try {
+              map.setLayoutProperty(layer.id, 'visibility', state.buildings3d ? 'visible' : 'none');
+            } catch (e) {}
+          }
+        });
+        if (!has3dBuilding && state.buildings3d) {
+          const buildingSource = map.getSource('openmaptiles')
+            ? 'openmaptiles'
+            : (map.getSource('carto') ? 'carto' : null);
+          if (buildingSource && !map.getLayer('clipper-3d-buildings')) {
+            try {
+              map.addLayer({
+                id: 'clipper-3d-buildings',
+                source: buildingSource,
+                'source-layer': 'building',
+                type: 'fill-extrusion',
+                minzoom: 14,
+                paint: {
+                  'fill-extrusion-color': state.styleId === 'tesla_dark' ? '#1e293b' : '#cbd5e1',
+                  'fill-extrusion-height': ['coalesce', ['get', 'render_height'], ['get', 'height'], 14],
+                  'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+                  'fill-extrusion-opacity': 0.82
+                }
+              });
+            } catch (e) {}
+          }
+        }
+
+        // 4. Accuracy & Heading Cone + User Puck Sources
+        if (!map.getSource('user-accuracy')) {
+          map.addSource('user-accuracy', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'user-accuracy-fill',
+            type: 'fill',
+            source: 'user-accuracy',
+            paint: { 'fill-color': '#38bdf8', 'fill-opacity': 0.14 }
+          });
+          map.addLayer({
+            id: 'user-accuracy-ring',
+            type: 'line',
+            source: 'user-accuracy',
+            paint: { 'line-color': '#06b6d4', 'line-width': 1.5, 'line-opacity': 0.55 }
+          });
+        }
+
+        if (!map.getSource('user-heading-cone')) {
+          map.addSource('user-heading-cone', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'user-heading-cone-fill',
+            type: 'fill',
+            source: 'user-heading-cone',
+            paint: { 'fill-color': '#22d3ee', 'fill-opacity': 0.22 }
+          });
+        }
+
+        // 5. Route Sources (Alternatives + Glowing Active Route + Animated Flow)
+        if (!map.getSource('route-alt')) {
+          map.addSource('route-alt', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'route-alt-line',
+            type: 'line',
+            source: 'route-alt',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#64748b', 'line-width': 6, 'line-opacity': 0.55 }
+          });
+        }
+
+        if (!map.getSource('route-main')) {
+          map.addSource('route-main', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'route-glow',
+            type: 'line',
+            source: 'route-main',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#22d3ee', 'line-width': 15, 'line-blur': 8, 'line-opacity': 0.45 }
+          });
+          map.addLayer({
+            id: 'route-core',
+            type: 'line',
+            source: 'route-main',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#4f46e5', 'line-width': 7.5, 'line-opacity': 0.96 }
+          });
+          map.addLayer({
+            id: 'route-flow',
+            type: 'line',
+            source: 'route-main',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#67e8f9', 'line-width': 3.5, 'line-dasharray': [1.5, 2.5], 'line-opacity': 0.92 }
+          });
+        }
+
+        // 6. Live Breadcrumb Trail Source
+        if (!map.getSource('trip-trail')) {
+          map.addSource('trip-trail', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'trip-trail-line',
+            type: 'line',
+            source: 'trip-trail',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#10b981', 'line-width': 4.5, 'line-opacity': 0.9 }
+          });
+        }
+
+        // 7. Measurement Tool Source
+        if (!map.getSource('measure-data')) {
+          map.addSource('measure-data', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'measure-poly',
+            type: 'fill',
+            source: 'measure-data',
+            filter: ['==', '$type', 'Polygon'],
+            paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.22 }
+          });
+          map.addLayer({
+            id: 'measure-line',
+            type: 'line',
+            source: 'measure-data',
+            filter: ['==', '$type', 'LineString'],
+            paint: { 'line-color': '#f59e0b', 'line-width': 3.5, 'line-dasharray': [2, 1.5] }
+          });
+          map.addLayer({
+            id: 'measure-pts',
+            type: 'circle',
+            source: 'measure-data',
+            filter: ['==', '$type', 'Point'],
+            paint: {
+              'circle-radius': 6,
+              'circle-color': '#ffffff',
+              'circle-stroke-color': '#f59e0b',
+              'circle-stroke-width': 3
+            }
+          });
+        }
+
+        // 8. 2D Fallback Location Puck (visible when in Globe Mode or if WebGL Three.js unavailable)
+        if (!map.getSource('user-puck')) {
+          map.addSource('user-puck', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+          map.addLayer({
+            id: 'user-puck-outer',
+            type: 'circle',
+            source: 'user-puck',
+            paint: { 'circle-radius': 11, 'circle-color': '#ffffff', 'circle-opacity': 0.95 }
+          });
+          map.addLayer({
+            id: 'user-puck-inner',
+            type: 'circle',
+            source: 'user-puck',
+            paint: { 'circle-radius': 7.5, 'circle-color': '#06b6d4', 'circle-opacity': 1.0 }
+          });
+        }
+
+        // 9. Three.js 3D Vehicle Layer
+        if (!map.getLayer('tesla-3d-vehicle')) {
+          try {
+            map.addLayer(createThreeVehicleLayer());
+          } catch (e) {}
+        }
+
+        syncRoutesToMap();
+        syncBreadcrumbToMap();
+        syncMeasureToMap();
+        syncPinToMap();
+        syncPoisToMap();
+        syncUserLocationVisuals();
+      }
+
+      function syncUserLocationVisuals() {
+        if (!state.hasLocation || !map.isStyleLoaded()) return;
+        const accSrc = map.getSource('user-accuracy');
+        if (accSrc) {
+          accSrc.setData(buildAccuracyCircleGeoJson(state.smoothLng, state.smoothLat, state.accuracyM));
+        }
+        const coneSrc = map.getSource('user-heading-cone');
+        if (coneSrc) {
+          coneSrc.setData(
+            state.cameraMode === 'TESLA_3D' || state.cameraMode === 'FOLLOW'
+              ? buildHeadingConeGeoJson(state.smoothLng, state.smoothLat, state.smoothBearing)
+              : { type: 'FeatureCollection', features: [] }
+          );
+        }
+        const puckSrc = map.getSource('user-puck');
+        if (puckSrc) {
+          const show2dPuck = state.globeMode || typeof THREE === 'undefined';
+          puckSrc.setData(
+            show2dPuck
+              ? {
+                  type: 'FeatureCollection',
+                  features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [state.smoothLng, state.smoothLat] }, properties: {} }]
+                }
+              : { type: 'FeatureCollection', features: [] }
+          );
+        }
+      }
+
+      function syncRoutesToMap() {
+        if (!map.isStyleLoaded()) return;
+        const altSrc = map.getSource('route-alt');
+        const mainSrc = map.getSource('route-main');
+        if (!altSrc || !mainSrc) return;
+
+        const altFeatures = [];
+        const mainFeatures = [];
+        state.routes.forEach((coords, idx) => {
+          if (!Array.isArray(coords) || coords.length < 2) return;
+          const feat = { type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: { idx } };
+          if (idx === state.activeRouteIndex) {
+            mainFeatures.push(feat);
+          } else {
+            altFeatures.push(feat);
+          }
+        });
+        altSrc.setData({ type: 'FeatureCollection', features: altFeatures });
+        mainSrc.setData({ type: 'FeatureCollection', features: mainFeatures });
+      }
+
+      function syncBreadcrumbToMap() {
+        if (!map.isStyleLoaded()) return;
+        const src = map.getSource('trip-trail');
+        if (!src) return;
+        const features = state.breadcrumb.length >= 2
+          ? [{ type: 'Feature', geometry: { type: 'LineString', coordinates: state.breadcrumb }, properties: {} }]
+          : [];
+        src.setData({ type: 'FeatureCollection', features });
+      }
+
+      function syncMeasureToMap() {
+        if (!map.isStyleLoaded()) return;
+        const src = map.getSource('measure-data');
+        if (!src) return;
+        const features = [];
+        state.measurePoints.forEach((p, idx) => {
+          features.push({ type: 'Feature', geometry: { type: 'Point', coordinates: p }, properties: { idx } });
+        });
+        if (state.measurePoints.length >= 2) {
+          const lineCoords = state.measureClosed && state.measurePoints.length >= 3
+            ? [...state.measurePoints, state.measurePoints[0]]
+            : state.measurePoints;
+          features.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: lineCoords }, properties: {} });
+        }
+        if (state.measureClosed && state.measurePoints.length >= 3) {
+          features.push({
+            type: 'Feature',
+            geometry: { type: 'Polygon', coordinates: [[...state.measurePoints, state.measurePoints[0]]] },
+            properties: {}
+          });
+        }
+        src.setData({ type: 'FeatureCollection', features });
+      }
+
+      function syncPinToMap() {
+        if (pinMarker) {
+          pinMarker.remove();
+          pinMarker = null;
+        }
+        if (state.pin) {
+          const el = document.createElement('div');
+          el.className = 'pin-marker';
+          pinMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+            .setLngLat([state.pin.lng, state.pin.lat])
+            .addTo(map);
+        }
+      }
+
+      function syncPoisToMap() {
+        poiMarkers.forEach((m) => m.remove());
+        poiMarkers = [];
+        state.pois.forEach((poi) => {
+          const el = document.createElement('div');
+          el.className = 'poi-dot ' + (poi.categoryKey || '');
+          el.textContent = poi.badge || '•';
+          el.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (bridge && bridge.onPoiClick) {
+              bridge.onPoiClick(String(poi.id));
+            }
+          });
+          const marker = new maplibregl.Marker({ element: el })
+            .setLngLat([poi.lng, poi.lat])
+            .addTo(map);
+          poiMarkers.push(marker);
+        });
+      }
+
+      // Smooth 60 FPS Vehicle Interpolation + Route Pulse Animation Loop
+      let lastFrameTs = performance.now();
+      function animateLoop(now) {
+        const dt = Math.min(0.1, (now - lastFrameTs) / 1000);
+        lastFrameTs = now;
+
+        if (state.hasLocation) {
+          const alpha = 1 - Math.exp(-dt * 7.5);
+          state.smoothLng += (state.targetLng - state.smoothLng) * alpha;
+          state.smoothLat += (state.targetLat - state.smoothLat) * alpha;
+          const angleDiff = shortestAngleDelta(state.smoothBearing, state.targetBearing);
+          state.smoothBearing = (state.smoothBearing + angleDiff * alpha + 360) % 360;
+
+          syncUserLocationVisuals();
+          map.triggerRepaint();
+        }
+
+        if (state.routes.length > 0 && map.isStyleLoaded() && map.getLayer('route-flow')) {
+          dashPhase = (dashPhase + dt * 3.2) % 4;
+          // Subtle glowing opacity pulse along route
+          const pulse = 0.65 + 0.3 * Math.sin(now * 0.004);
+          try {
+            map.setPaintProperty('route-flow', 'line-opacity', pulse);
+          } catch (e) {}
+        }
+
+        requestAnimationFrame(animateLoop);
+      }
+
+      map.on('style.load', () => {
+        ensureOverlayLayers();
+      });
+
+      map.on('load', () => {
+        ensureOverlayLayers();
+        if (bridge && bridge.onMapReady) bridge.onMapReady();
+        requestAnimationFrame(animateLoop);
+      });
+
+      map.on('click', (e) => {
+        const { lat, lng } = e.lngLat;
+        if (state.measureActive) {
+          if (bridge && bridge.onMeasurePointAdded) bridge.onMeasurePointAdded(lat, lng);
+        } else {
+          if (bridge && bridge.onMapClick) bridge.onMapClick(lat, lng);
+        }
+      });
+
+      // Touch long-press detection for drop-pin inspection
+      map.on('touchstart', (e) => {
+        pressMoved = false;
+        if (pressTimer) clearTimeout(pressTimer);
+        if (e.points && e.points.length === 1 && e.lngLat) {
+          const { lat, lng } = e.lngLat;
+          pressTimer = setTimeout(() => {
+            if (!pressMoved && bridge && bridge.onMapLongClick) {
+              bridge.onMapLongClick(lat, lng);
+            }
+          }, 520);
+        }
+      });
+      map.on('touchmove', () => {
+        pressMoved = true;
+        if (pressTimer) clearTimeout(pressTimer);
+      });
+      map.on('touchend', () => {
+        if (pressTimer) clearTimeout(pressTimer);
+      });
+
+      map.on('dragstart', () => {
+        if (state.cameraMode !== 'FREE') {
+          state.cameraMode = 'FREE';
+          if (bridge && bridge.onUserDetachedCamera) bridge.onUserDetachedCamera();
+        }
+      });
+
+      map.on('moveend', () => {
+        const c = map.getCenter();
+        if (bridge && bridge.onCameraIdle) {
+          bridge.onCameraIdle(c.lat, c.lng, map.getZoom(), map.getPitch(), map.getBearing());
+        }
+      });
+
+      // Public API called from Android Kotlin
+      window.ClipperMap = {
+        setStyle: function (styleId, terrain3d, buildings3d, globeMode) {
+          const styleChanged = state.styleId !== styleId;
+          state.styleId = styleId;
+          state.terrain3d = !!terrain3d;
+          state.buildings3d = !!buildings3d;
+          state.globeMode = !!globeMode;
+          if (styleChanged) {
+            map.setStyle(getStyleSpec(styleId));
+          } else {
+            ensureOverlayLayers();
+          }
+        },
+        setMeasureActive: function (active) {
+          state.measureActive = !!active;
+        },
+        updateVehicleLocation: function (lat, lng, bearing, accuracyM, speedMps, cameraMode) {
+          const firstFix = !state.hasLocation;
+          state.hasLocation = true;
+          state.targetLat = lat;
+          state.targetLng = lng;
+          state.targetBearing = bearing;
+          state.accuracyM = accuracyM || 12;
+          state.speedMps = speedMps || 0;
+          state.cameraMode = cameraMode || state.cameraMode;
+          if (firstFix) {
+            state.smoothLat = lat;
+            state.smoothLng = lng;
+            state.smoothBearing = bearing;
+          }
+
+          if (state.cameraMode === 'TESLA_3D') {
+            const kmh = (speedMps || 0) * 3.6;
+            const dynZoom = kmh > 85 ? 15.6 : (kmh > 45 ? 16.5 : 17.5);
+            map.easeTo({
+              center: [lng, lat],
+              zoom: dynZoom,
+              pitch: 62,
+              bearing: bearing,
+              duration: 550,
+              easing: (t) => t
+            });
+          } else if (state.cameraMode === 'FOLLOW') {
+            map.easeTo({
+              center: [lng, lat],
+              zoom: Math.max(map.getZoom(), 15.6),
+              pitch: 42,
+              duration: 500
+            });
+          }
+        },
+        flyTo: function (lat, lng, zoom, pitch, bearing) {
+          map.flyTo({
+            center: [lng, lat],
+            zoom: zoom || 15.5,
+            pitch: pitch !== undefined ? pitch : 48,
+            bearing: bearing !== undefined ? bearing : 0,
+            duration: 950
+          });
+        },
+        fitRouteBounds: function (routesJson) {
+          try {
+            const routes = JSON.parse(routesJson);
+            const first = routes && routes[0];
+            if (!first || first.length < 2) return;
+            const bounds = new maplibregl.LngLatBounds(first[0], first[0]);
+            first.forEach((coord) => bounds.extend(coord));
+            map.fitBounds(bounds, { padding: { top: 150, bottom: 290, left: 52, right: 72 }, maxZoom: 16.5, duration: 900 });
+          } catch (e) {}
+        },
+        setRoutes: function (routesJson, activeIndex) {
+          try {
+            state.routes = JSON.parse(routesJson) || [];
+            state.activeRouteIndex = activeIndex || 0;
+            syncRoutesToMap();
+          } catch (e) {}
+        },
+        setSearchPin: function (lat, lng, title) {
+          if (lat === null || lng === null || isNaN(lat) || isNaN(lng)) {
+            state.pin = null;
+          } else {
+            state.pin = { lat, lng, title: title || '' };
+          }
+          syncPinToMap();
+        },
+        setPoiMarkers: function (poisJson) {
+          try {
+            state.pois = JSON.parse(poisJson) || [];
+            syncPoisToMap();
+          } catch (e) {}
+        },
+        setBreadcrumb: function (coordsJson) {
+          try {
+            state.breadcrumb = JSON.parse(coordsJson) || [];
+            syncBreadcrumbToMap();
+          } catch (e) {}
+        },
+        setMeasureOverlay: function (pointsJson, closed) {
+          try {
+            state.measurePoints = JSON.parse(pointsJson) || [];
+            state.measureClosed = !!closed;
+            syncMeasureToMap();
+          } catch (e) {}
+        },
+        zoomBy: function (delta) {
+          map.easeTo({ zoom: map.getZoom() + delta, duration: 250 });
+        },
+        resetNorth: function () {
+          map.easeTo({ bearing: 0, pitch: state.cameraMode === 'TESLA_3D' ? 60 : 0, duration: 450 });
+        },
+        togglePitch3d: function () {
+          const nextPitch = map.getPitch() > 25 ? 0 : 60;
+          map.easeTo({ pitch: nextPitch, duration: 450 });
+        }
+      };
+    })();
+  </script>
+</body>
+</html>

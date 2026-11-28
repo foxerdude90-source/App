@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Compress
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MergeType
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Security
@@ -330,7 +331,7 @@ fun StudioScreen(
                         StudioToolId.FRAME_GRABBER -> FrameGrabberWorkspace(state, viewModel)
                         StudioToolId.VIDEO_LOOPER -> VideoLooperWorkspace(state, viewModel)
                         StudioToolId.FORENSICS -> ForensicsWorkspace(state, viewModel)
-                        StudioToolId.VELOCITY_STUDIO, StudioToolId.IMAGE_STUDIO, StudioToolId.COMPRESSOR, StudioToolId.CAPTIONS_STUDIO -> Unit
+                        StudioToolId.MAPS, StudioToolId.VELOCITY_STUDIO, StudioToolId.IMAGE_STUDIO, StudioToolId.COMPRESSOR, StudioToolId.CAPTIONS_STUDIO -> Unit
                     }
                 }
             }
@@ -349,12 +350,12 @@ private fun ProLabHubGrid(
     modifier: Modifier = Modifier,
 ) {
     val tools = StudioToolId.entries.filterNot {
-        it == StudioToolId.VELOCITY_STUDIO || it == StudioToolId.IMAGE_STUDIO
+        it == StudioToolId.MAPS || it == StudioToolId.VELOCITY_STUDIO || it == StudioToolId.IMAGE_STUDIO
     }
     val rows = tools.chunked(2)
 
     LazyColumn(
-        modifier = modifier,
+        modifier = modifier.testTag("studio_hub_lazy_column"),
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -373,6 +374,13 @@ private fun ProLabHubGrid(
                 isUpdating = isUpdatingEngine,
                 result = engineUpdateResult,
                 onUpdateClick = onUpdateEngine,
+            )
+        }
+
+        // Featured Full-Screen Maps 3D Launcher Card
+        item {
+            FeaturedMapsToolCard(
+                onClick = { onSelectTool(StudioToolId.MAPS) },
             )
         }
 
@@ -645,7 +653,80 @@ private fun FeaturedImageStudioCard(
     }
 }
 
+@Composable
+private fun FeaturedMapsToolCard(
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .testTag(StudioToolId.MAPS.tag)
+            .clickable(onClick = onClick),
+        color = StudioWhite,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.25.dp, ClipperCyan.copy(alpha = 0.45f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(ClipperCyanSoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Map,
+                    contentDescription = StudioToolId.MAPS.title,
+                    tint = ClipperCyan,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = StudioToolId.MAPS.title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = InkObsidian,
+                    )
+                    Surface(
+                        color = ClipperCyanSoft,
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            text = "FULL SCREEN 3D",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                            color = ClipperCyan,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "OpenFreeMap 3D buildings, ESRI satellite, live GPS & Three.js 3D EV car drive mode, OSRM turn-by-turn nav, Overpass POIs & geodesic measure.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = InkSlate,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private fun toolVisualMeta(tool: StudioToolId): Triple<ImageVector, Color, Color> = when (tool) {
+    StudioToolId.MAPS -> Triple(Icons.Outlined.Map, ClipperCyan, ClipperCyanSoft)
     StudioToolId.VELOCITY_STUDIO -> Triple(Icons.Outlined.ShowChart, ClipperIndigo, ClipperIndigoSoft)
     StudioToolId.IMAGE_STUDIO -> Triple(Icons.Outlined.AspectRatio, ClipperMagenta, ClipperMagentaSoft)
     StudioToolId.TRIMMER -> Triple(Icons.Outlined.ContentCut, ClipperIndigo, ClipperIndigoSoft)

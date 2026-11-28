@@ -62,7 +62,11 @@
 
     <!-- Pro Lab Screen -->
     <string name="studio_title">Pro Media Lab</string>
-    <string name="studio_subtitle">14 hardware-accelerated velocity, image ratio &amp; collage, video, audio, compression &amp; caption tools.</string>
+    <string name="studio_subtitle">15 hardware-accelerated maps, velocity, image ratio, video, audio, compression &amp; caption tools.</string>
+
+    <!-- Maps Screen -->
+    <string name="maps_title">Maps 3D</string>
+    <string name="maps_search_hint">Search places, addresses, or coords…</string>
 
     <!-- Captions Screen -->
     <string name="captions_title">Caption Studio</string>

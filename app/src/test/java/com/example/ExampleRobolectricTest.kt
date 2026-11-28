@@ -144,6 +144,8 @@ class ExampleRobolectricTest {
         // Navigate to Pro Lab and open Velocity Studio
         composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_hub_lazy_column")
+            .performScrollToNode(hasTestTag("studio_tool_velocity"))
         composeTestRule.onNodeWithTag("studio_tool_velocity").performClick()
         composeTestRule.waitForIdle()
 
@@ -218,6 +220,8 @@ class ExampleRobolectricTest {
         // Navigate to Pro Lab and open Image Ratio & Studio
         composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_hub_lazy_column")
+            .performScrollToNode(hasTestTag("studio_tool_image_studio"))
         composeTestRule.onNodeWithTag("studio_tool_image_studio").performClick()
         composeTestRule.waitForIdle()
 
@@ -242,7 +246,83 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("img_mode_palette").performClick()
         composeTestRule.waitForIdle()
     }
+
+    @Test
+    fun mapsGeoMath_parsesNominatimOsrmOverpassAndWeatherJson() {
+        val nominatimJson = """
+            [{"place_id":"101","lat":"37.8199","lon":"-122.4783","name":"Golden Gate Bridge","display_name":"Golden Gate Bridge, San Francisco, California, USA","type":"bridge"}]
+        """.trimIndent()
+        val places = com.example.core.maps.MapsGeoMath.parseNominatimSearchJson(nominatimJson)
+        assertEquals(1, places.size)
+        assertEquals("Golden Gate Bridge", places[0].name)
+        assertEquals(37.8199, places[0].point.lat, 0.0001)
+
+        val osrmJson = """
+            {"code":"Ok","routes":[{"distance":4250.5,"duration":390.0,"geometry":{"coordinates":[[-122.4194,37.7749],[-122.4500,37.8000],[-122.4783,37.8199]]},"legs":[{"summary":"US-101 N","steps":[{"name":"Market St","distance":800.0,"duration":90.0,"maneuver":{"type":"depart","modifier":"right","location":[-122.4194,37.7749]}},{"name":"US-101 N","distance":3450.5,"duration":300.0,"maneuver":{"type":"turn","modifier":"left","location":[-122.4500,37.8000]}}]}]}]}
+        """.trimIndent()
+        val routes = com.example.core.maps.MapsGeoMath.parseOsrmRoutesJson(osrmJson)
+        assertEquals(1, routes.size)
+        assertEquals(3, routes[0].geometry.size)
+        assertEquals(2, routes[0].steps.size)
+        assertEquals("Turn left onto US-101 N", routes[0].steps[1].instruction)
+
+        val overpassJson = """
+            {"elements":[{"id":55,"lat":37.7760,"lon":-122.4180,"tags":{"name":"Tesla Supercharger Civic"}}]}
+        """.trimIndent()
+        val pois = com.example.core.maps.MapsGeoMath.parseOverpassPoisJson(
+            jsonText = overpassJson,
+            center = com.example.core.maps.GeoPoint(37.7749, -122.4194),
+            category = com.example.core.maps.PoiCategory.EV_CHARGER,
+        )
+        assertEquals(1, pois.size)
+        assertEquals("Tesla Supercharger Civic", pois[0].name)
+
+        val weatherJson = """
+            {"current":{"temperature_2m":19.4,"wind_speed_10m":12.5,"weather_code":1}}
+        """.trimIndent()
+        val weather = com.example.core.maps.MapsGeoMath.parseOpenMeteoCurrentJson(weatherJson)
+        assertNotNull(weather)
+        assertEquals(19.4, weather!!.temperatureC, 0.01)
+        assertEquals("Partly Cloudy", weather.conditionLabel)
+    }
+
+    @Test
+    fun maps3D_opensFullScreenFromProLabAndTogglesLayersAndMeasureTool() {
+        composeTestRule.setContent {
+            ClipperTheme {
+                ClipperApp()
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Navigate to Pro Lab and open full-screen Maps 3D
+        composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_hub_lazy_column")
+            .performScrollToNode(hasTestTag("studio_tool_maps"))
+        composeTestRule.onNodeWithTag("studio_tool_maps").performClick()
+        composeTestRule.waitForIdle()
+
+        // Verify full-screen Maps root, search bar, and live GPS prompt are shown
+        composeTestRule.onNodeWithTag("maps_fullscreen_root").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_search_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_allow_location_banner").assertIsDisplayed()
+
+        // Open Map Layers sheet and select Tesla Night 3D style
+        composeTestRule.onNodeWithTag("maps_layers_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_layers_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_style_tesla_dark").performClick()
+        composeTestRule.waitForIdle()
+
+        // Activate Geodesic Measure tool
+        composeTestRule.onNodeWithTag("maps_measure_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_measure_hud_card").assertIsDisplayed()
+
+        // Exit full-screen Maps back to Pro Lab hub
+        composeTestRule.onNodeWithTag("maps_exit_fullscreen_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("pro_lab_update_engine_button").assertIsDisplayed()
+    }
 }
-
-
-
