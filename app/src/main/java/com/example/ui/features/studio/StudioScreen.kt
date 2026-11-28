@@ -80,6 +80,8 @@ import com.example.ui.features.captions.CaptionsScreen
 import com.example.ui.features.captions.CaptionsViewModel
 import com.example.ui.features.compress.CompressScreen
 import com.example.ui.features.compress.CompressViewModel
+import com.example.ui.features.image.ImageStudioScreen
+import com.example.ui.features.image.ImageStudioViewModel
 import com.example.ui.features.velocity.VelocityScreen
 import com.example.ui.features.velocity.VelocityViewModel
 import com.example.ui.theme.ClipperAmber
@@ -107,6 +109,7 @@ fun StudioScreen(
     compressViewModel: CompressViewModel,
     captionsViewModel: CaptionsViewModel,
     velocityViewModel: VelocityViewModel,
+    imageStudioViewModel: ImageStudioViewModel,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -148,6 +151,17 @@ fun StudioScreen(
                     )
                 }
                 VelocityScreen(viewModel = velocityViewModel, modifier = Modifier.weight(1f))
+            }
+        } else if (activeTool == StudioToolId.IMAGE_STUDIO) {
+            Column(modifier = Modifier.fillMaxSize().background(StudioSnow)) {
+                Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                    ToolWorkspaceHeader(
+                        title = activeTool.title,
+                        subtitle = activeTool.subtitle,
+                        onBack = { viewModel.openTool(null) },
+                    )
+                }
+                ImageStudioScreen(viewModel = imageStudioViewModel, modifier = Modifier.weight(1f))
             }
         } else if (activeTool == StudioToolId.COMPRESSOR) {
             Column(modifier = Modifier.fillMaxSize().background(StudioSnow)) {
@@ -316,7 +330,7 @@ fun StudioScreen(
                         StudioToolId.FRAME_GRABBER -> FrameGrabberWorkspace(state, viewModel)
                         StudioToolId.VIDEO_LOOPER -> VideoLooperWorkspace(state, viewModel)
                         StudioToolId.FORENSICS -> ForensicsWorkspace(state, viewModel)
-                        StudioToolId.VELOCITY_STUDIO, StudioToolId.COMPRESSOR, StudioToolId.CAPTIONS_STUDIO -> Unit
+                        StudioToolId.VELOCITY_STUDIO, StudioToolId.IMAGE_STUDIO, StudioToolId.COMPRESSOR, StudioToolId.CAPTIONS_STUDIO -> Unit
                     }
                 }
             }
@@ -334,7 +348,9 @@ private fun ProLabHubGrid(
     onSelectTool: (StudioToolId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val tools = StudioToolId.entries.filterNot { it == StudioToolId.VELOCITY_STUDIO }
+    val tools = StudioToolId.entries.filterNot {
+        it == StudioToolId.VELOCITY_STUDIO || it == StudioToolId.IMAGE_STUDIO
+    }
     val rows = tools.chunked(2)
 
     LazyColumn(
@@ -364,6 +380,13 @@ private fun ProLabHubGrid(
         item {
             FeaturedVelocityToolCard(
                 onClick = { onSelectTool(StudioToolId.VELOCITY_STUDIO) },
+            )
+        }
+
+        // Featured Image Ratio & Studio Launcher Card
+        item {
+            FeaturedImageStudioCard(
+                onClick = { onSelectTool(StudioToolId.IMAGE_STUDIO) },
             )
         }
 
@@ -550,8 +573,81 @@ private fun FeaturedVelocityToolCard(
     }
 }
 
+@Composable
+private fun FeaturedImageStudioCard(
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .testTag(StudioToolId.IMAGE_STUDIO.tag)
+            .clickable(onClick = onClick),
+        color = StudioWhite,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.25.dp, ClipperMagenta.copy(alpha = 0.35f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(ClipperMagentaSoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.AspectRatio,
+                    contentDescription = StudioToolId.IMAGE_STUDIO.title,
+                    tint = ClipperMagenta,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = StudioToolId.IMAGE_STUDIO.title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = InkObsidian,
+                    )
+                    Surface(
+                        color = ClipperMagentaSoft,
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            text = "4 TOOLS",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                            color = ClipperMagenta,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "Convert any image to any custom aspect ratio (blur/crop/solid/gradient fit), build photo collages, apply film looks, extract palettes & strip EXIF.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = InkSlate,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private fun toolVisualMeta(tool: StudioToolId): Triple<ImageVector, Color, Color> = when (tool) {
     StudioToolId.VELOCITY_STUDIO -> Triple(Icons.Outlined.ShowChart, ClipperIndigo, ClipperIndigoSoft)
+    StudioToolId.IMAGE_STUDIO -> Triple(Icons.Outlined.AspectRatio, ClipperMagenta, ClipperMagentaSoft)
     StudioToolId.TRIMMER -> Triple(Icons.Outlined.ContentCut, ClipperIndigo, ClipperIndigoSoft)
     StudioToolId.SPEED_RAMP -> Triple(Icons.Outlined.Speed, ClipperCyan, ClipperCyanSoft)
     StudioToolId.COLOR_GRADE -> Triple(Icons.Outlined.ColorLens, ClipperMagenta, ClipperMagentaSoft)

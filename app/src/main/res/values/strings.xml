@@ -62,7 +62,7 @@
 
     <!-- Pro Lab Screen -->
     <string name="studio_title">Pro Media Lab</string>
-    <string name="studio_subtitle">13 hardware-accelerated velocity beat-sync, curve, video, audio, compression &amp; caption tools.</string>
+    <string name="studio_subtitle">14 hardware-accelerated velocity, image ratio &amp; collage, video, audio, compression &amp; caption tools.</string>
 
     <!-- Captions Screen -->
     <string name="captions_title">Caption Studio</string>

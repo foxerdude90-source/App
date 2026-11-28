@@ -17,6 +17,7 @@ import com.example.core.upscale.UpscaleFramePreviewResult
 import com.example.core.upscale.UpscaleStylePreset
 import com.example.core.upscale.UpscaleTargetPreset
 import com.example.core.upscale.VideoUpscalerEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -83,6 +84,8 @@ class UpscaleViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
                 schedulePreviewRefresh(debounceMs = 0L)
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -166,8 +169,8 @@ class UpscaleViewModel(application: Application) : AndroidViewModel(application)
                     savedResult = null,
                 )
             }
+            val outFile = File(context.cacheDir, "upscaled_${System.currentTimeMillis()}.mp4")
             try {
-                val outFile = File(context.cacheDir, "upscaled_${System.currentTimeMillis()}.mp4")
                 VideoUpscalerEngine.upscaleVideo(
                     context = context,
                     inputUri = uri,
@@ -196,7 +199,6 @@ class UpscaleViewModel(application: Application) : AndroidViewModel(application)
                         category = SaveCategory.VIDEO,
                     )
                 }
-                outFile.delete()
                 _uiState.update {
                     it.copy(
                         isExporting = false,
@@ -205,6 +207,9 @@ class UpscaleViewModel(application: Application) : AndroidViewModel(application)
                         savedResult = saved,
                     )
                 }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isExporting = false, exportProgress = 0f, exportLabel = "") }
+                throw ce
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -212,6 +217,8 @@ class UpscaleViewModel(application: Application) : AndroidViewModel(application)
                         errorMessage = e.message ?: "GPU upscale failed on this video.",
                     )
                 }
+            } finally {
+                outFile.delete()
             }
         }
     }

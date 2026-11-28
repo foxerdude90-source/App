@@ -502,6 +502,41 @@ class ClipperCoreMathTests {
         assertTrue("Expected at least 6 detected beats, got ${analysis.beats.size}", analysis.beats.size >= 6)
         assertEquals(120f, analysis.bpm, 6.0f)
     }
+
+    @Test
+    fun imageStudio_ratioDimensionsAndPaletteQuantizerAreExact() {
+        val (w169, h169) = com.example.core.image.ImageStudioEngine.computeRatioOutputDimensions(
+            srcWidth = 4000,
+            srcHeight = 3000,
+            ratioW = 16f,
+            ratioH = 9f,
+            resolution = com.example.core.image.RatioOutputResolution.HD_1080,
+        )
+        assertEquals(1080, w169)
+        assertEquals(608, h169)
+        assertEquals(0, w169 % 2)
+        assertEquals(0, h169 % 2)
+
+        val (w57, h57) = com.example.core.image.ImageStudioEngine.computeRatioOutputDimensions(
+            srcWidth = 1000,
+            srcHeight = 1000,
+            ratioW = 5f,
+            ratioH = 7f,
+            resolution = com.example.core.image.RatioOutputResolution.QHD_2048,
+        )
+        assertEquals(2048, h57)
+        assertEquals(1462, w57)
+
+        val crimson = 0xFF760107.toInt()
+        val cyan = 0xFF06B6D4.toInt()
+        val pixels = IntArray(400) { idx -> if (idx < 300) crimson else cyan }
+        val swatches = com.example.core.image.ImageStudioEngine.extractDominantPaletteFromPixels(pixels, swatchCount = 2)
+        assertEquals(2, swatches.size)
+        assertEquals("#760107", swatches[0].hex)
+        assertEquals(75, swatches[0].sharePercent)
+        assertEquals("#06B6D4", swatches[1].hex)
+        assertEquals(25, swatches[1].sharePercent)
+    }
 }
 
 

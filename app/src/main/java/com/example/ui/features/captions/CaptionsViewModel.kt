@@ -17,6 +17,7 @@ import com.example.core.media.ProbedMediaInfo
 import com.example.core.media.SaveCategory
 import com.example.core.media.SavedMediaResult
 import com.example.core.media.VideoProcessingEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -270,24 +271,25 @@ class CaptionsViewModel(application: Application) : AndroidViewModel(application
 
         viewModelScope.launch {
             _uiState.update { it.copy(isExporting = true, exportProgress = 0.5f, exportLabel = "Rendering 1080×1350 caption card...", errorMessage = null) }
+            val tempFile = File(context.cacheDir, "caption_card_${System.currentTimeMillis()}.png")
             try {
                 val saved = withContext(Dispatchers.Default) {
                     val cardBitmap = CaptionBitmapRenderer.renderStandaloneCardBitmap(context, activeText, style)
-                    val tempFile = File(context.cacheDir, "caption_card_${System.currentTimeMillis()}.png")
-                    FileOutputStream(tempFile).use { out ->
-                        cardBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        out.flush()
+                    try {
+                        FileOutputStream(tempFile).use { out ->
+                            cardBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                            out.flush()
+                        }
+                    } finally {
+                        cardBitmap.recycle()
                     }
-                    cardBitmap.recycle()
-                    val res = MediaStoreSaver.saveFileToGallery(
+                    MediaStoreSaver.saveFileToGallery(
                         context = context,
                         sourceFile = tempFile,
                         displayName = "clipper_card_${System.currentTimeMillis()}.png",
                         mimeType = "image/png",
                         category = SaveCategory.IMAGE,
                     )
-                    tempFile.delete()
-                    res
                 }
                 _uiState.update {
                     it.copy(
@@ -296,8 +298,13 @@ class CaptionsViewModel(application: Application) : AndroidViewModel(application
                         savedResult = saved,
                     )
                 }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isExporting = false, exportProgress = 0f, exportLabel = "") }
+                throw ce
             } catch (e: Exception) {
                 _uiState.update { it.copy(isExporting = false, errorMessage = e.message ?: "Card export failed.") }
+            } finally {
+                tempFile.delete()
             }
         }
     }
@@ -319,8 +326,8 @@ class CaptionsViewModel(application: Application) : AndroidViewModel(application
                     savedResult = null,
                 )
             }
+            val outFile = File(context.cacheDir, "captioned_${System.currentTimeMillis()}.mp4")
             try {
-                val outFile = File(context.cacheDir, "captioned_${System.currentTimeMillis()}.mp4")
                 VideoProcessingEngine.burnCaptionsIntoVideo(
                     context = context,
                     inputUri = uri,
@@ -343,7 +350,6 @@ class CaptionsViewModel(application: Application) : AndroidViewModel(application
                         category = SaveCategory.VIDEO,
                     )
                 }
-                outFile.delete()
                 _uiState.update {
                     it.copy(
                         isExporting = false,
@@ -351,6 +357,9 @@ class CaptionsViewModel(application: Application) : AndroidViewModel(application
                         savedResult = saved,
                     )
                 }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isExporting = false, exportProgress = 0f, exportLabel = "") }
+                throw ce
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -358,6 +367,8 @@ class CaptionsViewModel(application: Application) : AndroidViewModel(application
                         errorMessage = e.message ?: "Caption burn-in failed.",
                     )
                 }
+            } finally {
+                outFile.delete()
             }
         }
     }

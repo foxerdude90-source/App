@@ -138,6 +138,8 @@ class VelocityViewModel(application: Application) : AndroidViewModel(application
                 if (_uiState.value.musicUri == null) {
                     analyzeAudioForBeats(uri, trimStartMs = 0L, trimEndMs = safeDur)
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 _uiState.update { it.copy(errorMessage = t.message ?: "Could not load selected video.") }
             }
@@ -161,6 +163,8 @@ class VelocityViewModel(application: Application) : AndroidViewModel(application
                     )
                 }
                 analyzeAudioForBeats(uri, trimStartMs = 0L, trimEndMs = defaultEnd)
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 _uiState.update { it.copy(errorMessage = t.message ?: "Could not load selected music track.") }
             }
@@ -242,6 +246,10 @@ class VelocityViewModel(application: Application) : AndroidViewModel(application
 
     fun setCropZoom(zoom: Float) {
         _uiState.update { it.copy(cropZoom = zoom.coerceIn(1.0f, 2.0f)) }
+    }
+
+    fun setKeepOriginalAudio(keep: Boolean) {
+        _uiState.update { it.copy(keepOriginalVideoAudioIfNoMusic = keep) }
     }
 
     // --- System 1: Auto Velocity Controls ---

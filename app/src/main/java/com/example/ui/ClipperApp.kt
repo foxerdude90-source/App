@@ -59,6 +59,7 @@ import com.example.ui.features.cutout.CutoutScreen
 import com.example.ui.features.cutout.CutoutViewModel
 import com.example.ui.features.fetch.FetchScreen
 import com.example.ui.features.fetch.FetchViewModel
+import com.example.ui.features.image.ImageStudioViewModel
 import com.example.ui.features.studio.StudioScreen
 import com.example.ui.features.studio.StudioViewModel
 import com.example.ui.features.upscale.UpscaleScreen
@@ -133,6 +134,7 @@ fun ClipperApp(
     compressViewModel: CompressViewModel = viewModel(),
     captionsViewModel: CaptionsViewModel = viewModel(),
     velocityViewModel: VelocityViewModel = viewModel(),
+    imageStudioViewModel: ImageStudioViewModel = viewModel(),
 ) {
     var activeTab by rememberSaveable { mutableStateOf(ClipperTab.FETCH) }
 
@@ -199,6 +201,7 @@ fun ClipperApp(
                         compressViewModel = compressViewModel,
                         captionsViewModel = captionsViewModel,
                         velocityViewModel = velocityViewModel,
+                        imageStudioViewModel = imageStudioViewModel,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -263,6 +266,7 @@ fun ClipperApp(
                     compressViewModel = compressViewModel,
                     captionsViewModel = captionsViewModel,
                     velocityViewModel = velocityViewModel,
+                    imageStudioViewModel = imageStudioViewModel,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding),
@@ -283,6 +287,7 @@ private fun ClipperTabContent(
     compressViewModel: CompressViewModel,
     captionsViewModel: CaptionsViewModel,
     velocityViewModel: VelocityViewModel,
+    imageStudioViewModel: ImageStudioViewModel,
     modifier: Modifier = Modifier,
 ) {
     AnimatedContent(
@@ -304,6 +309,7 @@ private fun ClipperTabContent(
                 compressViewModel = compressViewModel,
                 captionsViewModel = captionsViewModel,
                 velocityViewModel = velocityViewModel,
+                imageStudioViewModel = imageStudioViewModel,
                 modifier = Modifier.fillMaxSize(),
             )
         }

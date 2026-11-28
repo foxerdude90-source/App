@@ -258,6 +258,7 @@ fun VelocityScreen(
                                 ?: (state.video?.durationMs ?: 10_000L),
                             musicUri = state.musicUri,
                             musicTrimStartMs = state.musicTrimStartMs,
+                            keepOriginalAudio = state.keepOriginalVideoAudioIfNoMusic,
                             aspectCrop = state.aspectCrop,
                             keyframes = activeKeyframes,
                             onPlayheadChanged = viewModel::updatePreviewPlayhead,
@@ -349,41 +350,45 @@ fun VelocityScreen(
 
                         // Video Trim Range Slider
                         state.video?.let { vid ->
-                            val maxVid = vid.durationMs.coerceAtLeast(1000L).toFloat()
+                            val maxVid = vid.durationMs.coerceAtLeast(500L).toFloat()
                             val vStart = state.videoTrimStartMs.toFloat().coerceIn(0f, maxVid)
-                            val vEnd = state.videoTrimEndMs.takeIf { it > state.videoTrimStartMs }?.toFloat()?.coerceIn(vStart, maxVid) ?: maxVid
+                            val vEnd = (state.videoTrimEndMs.takeIf { it > state.videoTrimStartMs }?.toFloat() ?: maxVid)
+                                .coerceIn(vStart, maxVid)
 
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                ) {
-                                    Text("Video Trim", style = MaterialTheme.typography.labelLarge, color = InkSlate)
-                                    Text(
-                                        text = "${MediaStoreSaver.formatDurationMs(vStart.roundToLong())} – ${MediaStoreSaver.formatDurationMs(vEnd.roundToLong())}",
-                                        style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
-                                        color = ClipperIndigo,
+                            if (maxVid > 500f) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                    ) {
+                                        Text("Video Trim", style = MaterialTheme.typography.labelLarge, color = InkSlate)
+                                        Text(
+                                            text = "${MediaStoreSaver.formatDurationMs(vStart.roundToLong())} – ${MediaStoreSaver.formatDurationMs(vEnd.roundToLong())}",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMono),
+                                            color = ClipperIndigo,
+                                        )
+                                    }
+                                    RangeSlider(
+                                        value = vStart..vEnd,
+                                        onValueChange = { range ->
+                                            viewModel.updateVideoTrim(range.start.roundToLong(), range.endInclusive.roundToLong())
+                                        },
+                                        valueRange = 0f..maxVid,
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = ClipperIndigo,
+                                            activeTrackColor = ClipperIndigo,
+                                        ),
                                     )
                                 }
-                                RangeSlider(
-                                    value = vStart..vEnd,
-                                    onValueChange = { range ->
-                                        viewModel.updateVideoTrim(range.start.roundToLong(), range.endInclusive.roundToLong())
-                                    },
-                                    valueRange = 0f..maxVid,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = ClipperIndigo,
-                                        activeTrackColor = ClipperIndigo,
-                                    ),
-                                )
                             }
                         }
 
-                        // Music Trim / Drop Offset Slider
-                        if (state.musicUri != null && state.musicDurationMs > 0L) {
-                            val maxAudio = state.musicDurationMs.coerceAtLeast(1000L).toFloat()
+                        // Music Trim / Drop Offset Slider (or Keep Original Video Audio switch)
+                        if (state.musicUri != null && state.musicDurationMs > 600L) {
+                            val maxAudio = state.musicDurationMs.toFloat()
                             val aStart = state.musicTrimStartMs.toFloat().coerceIn(0f, maxAudio)
-                            val aEnd = state.musicTrimEndMs.takeIf { it > state.musicTrimStartMs }?.toFloat()?.coerceIn(aStart, maxAudio) ?: maxAudio
+                            val aEnd = (state.musicTrimEndMs.takeIf { it > state.musicTrimStartMs }?.toFloat() ?: maxAudio)
+                                .coerceIn(aStart, maxAudio)
 
                             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Row(
@@ -408,6 +413,23 @@ fun VelocityScreen(
                                         thumbColor = ClipperCyan,
                                         activeTrackColor = ClipperCyan,
                                     ),
+                                )
+                            }
+                        } else if (state.video != null && state.musicUri == null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Keep Original Video Audio", style = MaterialTheme.typography.labelLarge, color = InkObsidian)
+                                    Text("Turn off for silent export when no external music is attached", style = MaterialTheme.typography.bodySmall, color = InkSlate)
+                                }
+                                Switch(
+                                    checked = state.keepOriginalVideoAudioIfNoMusic,
+                                    onCheckedChange = viewModel::setKeepOriginalAudio,
+                                    colors = SwitchDefaults.colors(checkedTrackColor = ClipperIndigo),
+                                    modifier = Modifier.testTag("velocity_keep_original_audio_switch"),
                                 )
                             }
                         }
@@ -885,6 +907,7 @@ private fun VelocityLivePreviewPlayer(
     videoTrimEndMs: Long,
     musicUri: Uri?,
     musicTrimStartMs: Long,
+    keepOriginalAudio: Boolean,
     aspectCrop: VelocityAspectCrop,
     keyframes: List<VelocityKeyframe>,
     onPlayheadChanged: (Float, Float) -> Unit,
@@ -893,7 +916,6 @@ private fun VelocityLivePreviewPlayer(
     val latestKeyframes by rememberUpdatedState(keyframes)
     val latestTrimStart by rememberUpdatedState(videoTrimStartMs)
     val latestTrimEnd by rememberUpdatedState(videoTrimEndMs)
-    val latestMusicStart by rememberUpdatedState(musicTrimStartMs)
 
     var isPlaying by remember { mutableStateOf(false) }
 
@@ -908,7 +930,7 @@ private fun VelocityLivePreviewPlayer(
         }
     }
 
-    LaunchedEffect(videoUri, videoTrimStartMs, videoTrimEndMs, musicUri) {
+    LaunchedEffect(videoUri, videoTrimStartMs, videoTrimEndMs, musicUri, keepOriginalAudio) {
         val clipped = MediaItem.Builder()
             .setUri(videoUri)
             .setClippingConfiguration(
@@ -919,7 +941,7 @@ private fun VelocityLivePreviewPlayer(
             )
             .build()
         videoPlayer.setMediaItem(clipped)
-        videoPlayer.volume = if (musicUri != null) 0f else 1f
+        videoPlayer.volume = if (musicUri != null || !keepOriginalAudio) 0f else 1f
         videoPlayer.prepare()
     }
 
@@ -954,6 +976,7 @@ private fun VelocityLivePreviewPlayer(
             musicPlayer.pause()
         }
 
+        var prevPosMs = -1L
         while (isPlaying) {
             val spanMs = (latestTrimEnd - latestTrimStart).coerceAtLeast(300L)
             val posMs = videoPlayer.currentPosition.coerceIn(0L, spanMs)
@@ -961,9 +984,11 @@ private fun VelocityLivePreviewPlayer(
             val instantSpeed = VelocityCurveMath.evaluateSplineSpeed(latestKeyframes, norm)
             videoPlayer.setPlaybackParameters(PlaybackParameters(instantSpeed))
             onPlayheadChanged(norm, instantSpeed)
-            if (musicUri != null && posMs < 60L && musicPlayer.currentPosition > 1000L) {
+            // Reliable loop wraparound detection at any speed (including 3x-4x fast peaks)
+            if (musicUri != null && prevPosMs >= 0L && posMs < prevPosMs - 150L) {
                 musicPlayer.seekTo(0L)
             }
+            prevPosMs = posMs
             delay(33L)
         }
     }

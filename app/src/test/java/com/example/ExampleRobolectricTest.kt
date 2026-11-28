@@ -169,6 +169,79 @@ class ExampleRobolectricTest {
             .performScrollToNode(hasTestTag("velocity_export_button"))
         composeTestRule.onNodeWithTag("velocity_export_button").assertIsDisplayed()
     }
+
+    @Test
+    fun imageStudio_rendersCustomRatioAndCollageCells() {
+        val src = android.graphics.Bitmap.createBitmap(320, 200, android.graphics.Bitmap.Config.ARGB_8888)
+        src.eraseColor(0xFF760107.toInt())
+        try {
+            val out = com.example.core.image.ImageStudioEngine.renderImageRatio(
+                source = src,
+                config = com.example.core.image.ImageRatioConfig(
+                    preset = com.example.core.image.ImageRatioPreset.CUSTOM,
+                    customRatioW = 5f,
+                    customRatioH = 7f,
+                    fitMode = com.example.core.image.RatioFitMode.FIT_BLUR,
+                    paddingFraction = 0.05f,
+                    cornerRadiusFraction = 0.1f,
+                ),
+                previewMaxEdge = 350,
+            )
+            assertEquals(250, out.width)
+            assertEquals(350, out.height)
+            out.recycle()
+        } finally {
+            src.recycle()
+        }
+
+        val bounds = android.graphics.RectF(20f, 20f, 1020f, 1020f)
+        com.example.core.image.CollageLayout.entries.forEach { layout ->
+            val cells = com.example.core.image.ImageStudioEngine.computeCollageCells(bounds, layout, gap = 16f)
+            assertEquals(layout.slotCount, cells.size)
+            cells.forEach { c ->
+                org.junit.Assert.assertTrue(c.width() > 50f && c.height() > 50f)
+                org.junit.Assert.assertTrue(c.left >= bounds.left - 0.5f && c.right <= bounds.right + 0.5f)
+                org.junit.Assert.assertTrue(c.top >= bounds.top - 0.5f && c.bottom <= bounds.bottom + 0.5f)
+            }
+        }
+    }
+
+    @Test
+    fun imageStudio_opensFromProLabAndSwitchesModes() {
+        composeTestRule.setContent {
+            ClipperTheme {
+                ClipperApp()
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Navigate to Pro Lab and open Image Ratio & Studio
+        composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_tool_image_studio").performClick()
+        composeTestRule.waitForIdle()
+
+        // Ratio Studio default mode + Custom W:H input fields
+        composeTestRule.onNodeWithTag("ratio_pick_image_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("image_studio_lazy_column")
+            .performScrollToNode(hasTestTag("ratio_preset_custom"))
+        composeTestRule.onNodeWithTag("ratio_preset_custom").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("ratio_custom_w_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("ratio_custom_h_input").assertIsDisplayed()
+
+        // Switch across Collage, Film Filters, and Palette & EXIF modes
+        composeTestRule.onNodeWithTag("image_studio_lazy_column")
+            .performScrollToNode(hasTestTag("img_mode_collage"))
+        composeTestRule.onNodeWithTag("img_mode_collage").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("collage_pick_photos_button").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("img_mode_filters").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("img_mode_palette").performClick()
+        composeTestRule.waitForIdle()
+    }
 }
 
 

@@ -21,6 +21,7 @@ import com.example.core.studio.ForensicTrackReport
 import com.example.core.studio.ProStudioEngine
 import com.example.core.studio.WatermarkConfig
 import com.example.core.studio.WatermarkPosition
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -39,6 +40,7 @@ enum class StudioToolId(
     val tag: String,
 ) {
     VELOCITY_STUDIO("Velocity Studio", "Beat-sync smooth slow-mo & custom CapCut curves", "studio_tool_velocity"),
+    IMAGE_STUDIO("Image Ratio & Studio", "Any aspect ratio, collage grid, film filters & EXIF", "studio_tool_image_studio"),
     TRIMMER("Precision Trimmer", "Filmstrip frame-accurate clip cutter", "studio_tool_trimmer"),
     SPEED_RAMP("Speed & Slow-Mo", "0.25×–4× speed with Sonic pitch lock", "studio_tool_speed"),
     COLOR_GRADE("GPU Color Grader", "GLSL LUTs, exposure, contrast & vignette", "studio_tool_color"),
@@ -480,6 +482,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update { it.copy(contactSheetPreview = sheet, progress = 0.8f) }
                 val saved = saveBitmapInternal(sheet, "clipper_storyboard_${grid}x${grid}_${System.currentTimeMillis()}.png")
                 _uiState.update { it.copy(isProcessing = false, progress = 1f, progressLabel = "", savedResult = saved) }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isProcessing = false, progress = 0f, progressLabel = "") }
+                throw ce
             } catch (e: Exception) {
                 _uiState.update { it.copy(isProcessing = false, errorMessage = e.message ?: "Contact sheet failed.") }
             }
@@ -533,8 +538,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     savedResult = null,
                 )
             }
+            val outFile = File(context.cacheDir, "studio_${fileSuffix}_${System.currentTimeMillis()}.mp4")
             try {
-                val outFile = File(context.cacheDir, "studio_${fileSuffix}_${System.currentTimeMillis()}.mp4")
                 block(outFile) { p ->
                     _uiState.update { s -> s.copy(progress = p, progressLabel = "$initialLabel (${(p * 100).toInt()}%)") }
                 }
@@ -547,14 +552,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         category = SaveCategory.VIDEO,
                     )
                 }
-                outFile.delete()
                 _uiState.update {
                     it.copy(isProcessing = false, progress = 1f, progressLabel = "", savedResult = saved)
                 }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isProcessing = false, progress = 0f, progressLabel = "") }
+                throw ce
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isProcessing = false, errorMessage = e.message ?: "Export failed.")
                 }
+            } finally {
+                outFile.delete()
             }
         }
     }
@@ -566,6 +575,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val saved = saveBitmapInternal(bmp, fileName)
                 _uiState.update { it.copy(isProcessing = false, progress = 1f, progressLabel = "", savedResult = saved) }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isProcessing = false, progress = 0f, progressLabel = "") }
+                throw ce
             } catch (e: Exception) {
                 _uiState.update { it.copy(isProcessing = false, errorMessage = e.message ?: "Failed to save image.") }
             }
@@ -575,19 +587,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun saveBitmapInternal(bmp: Bitmap, fileName: String): SavedMediaResult = withContext(Dispatchers.IO) {
         val context = getApplication<Application>()
         val temp = File(context.cacheDir, "img_${System.currentTimeMillis()}.png")
-        FileOutputStream(temp).use { out ->
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
-            out.flush()
+        try {
+            FileOutputStream(temp).use { out ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                out.flush()
+            }
+            MediaStoreSaver.saveFileToGallery(
+                context = context,
+                sourceFile = temp,
+                displayName = fileName,
+                mimeType = "image/png",
+                category = SaveCategory.IMAGE,
+            )
+        } finally {
+            temp.delete()
         }
-        val res = MediaStoreSaver.saveFileToGallery(
-            context = context,
-            sourceFile = temp,
-            displayName = fileName,
-            mimeType = "image/png",
-            category = SaveCategory.IMAGE,
-        )
-        temp.delete()
-        res
     }
 
     private fun scaleDownForPreview(bmp: Bitmap, maxEdge: Int): Bitmap {
