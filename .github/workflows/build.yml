@@ -57,7 +57,21 @@ jobs:
         run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Assemble Release APK
-        run: gradle :app:assembleRelease --no-daemon
+        run: |
+          TEMP_KEYSTORE="$(mktemp /tmp/ci-release-XXXX.jks)"
+          rm -f "$TEMP_KEYSTORE"
+          trap 'rm -f "$TEMP_KEYSTORE"' EXIT
+          keytool -genkeypair -noprompt \
+            -keystore "$TEMP_KEYSTORE" \
+            -storepass citemppass \
+            -alias upload \
+            -keypass citemppass \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 1 \
+            -dname "CN=CI,O=Clipper,C=US"
+          KEYSTORE_PATH="$TEMP_KEYSTORE" STORE_PASSWORD=citemppass KEY_PASSWORD=citemppass \
+            gradle :app:assembleRelease --no-daemon
 
       - name: Sign Release APK
         id: sign_app
