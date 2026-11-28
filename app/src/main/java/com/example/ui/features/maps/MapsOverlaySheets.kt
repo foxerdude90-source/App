@@ -1328,6 +1328,7 @@ internal fun MapLayersSheetCard(
     onSelectStyle: (MapStylePreset) -> Unit,
     onToggleTerrain3d: () -> Unit,
     onToggleBuildings3d: () -> Unit,
+    onToggleScene3d: () -> Unit,
     onToggleTransitOverlay: () -> Unit,
     onToggleUnits: () -> Unit,
     onClose: () -> Unit,
@@ -1390,7 +1391,14 @@ internal fun MapLayersSheetCard(
 
             HorizontalDivider(color = StudioBorder)
 
+            val sceneDetailSubtitle = if (state.osmScenePathCount + state.osmSceneRoofCount + state.osmSceneTreeCount > 0) {
+                "Loaded: ${state.osmScenePathCount} colony lanes • ${state.osmSceneRoofCount} 3D roofs • ${state.osmSceneTreeCount} 3D trees"
+            } else {
+                "Unfiltered colony service lanes, OSM pitched roofs & 3D trees"
+            }
+
             LayerToggleRow("3D Buildings Extrusion", "Render real OSM architectural heights", state.buildings3dEnabled, onToggleBuildings3d)
+            LayerToggleRow("3D Roofs, Trees & Colony Lanes", sceneDetailSubtitle, state.scene3dEnabled, onToggleScene3d)
             LayerToggleRow("Transit & Rail Lines Overlay", "Highlight Metro, Rail & Tram corridors", state.transitOverlayEnabled, onToggleTransitOverlay)
             LayerToggleRow("3D Elevation Hillshade (DEM)", "AWS Terrarium terrain relief on Topo style", state.terrain3dEnabled, onToggleTerrain3d)
             LayerToggleRow("Imperial Units (mi / mph / °F)", "Switch between Metric & Imperial telemetry", state.useImperialUnits, onToggleUnits)

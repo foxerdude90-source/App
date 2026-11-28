@@ -287,6 +287,52 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun osm3dSceneEngine_parsesColonyLanesPitchedRoofsAnd3dTrees() {
+        val overpassSceneJson = """
+            {
+              "elements": [
+                {"type":"node","id":1,"lat":19.1297,"lon":72.8707},
+                {"type":"node","id":2,"lat":19.1299,"lon":72.8709},
+                {"type":"node","id":3,"lat":19.1299,"lon":72.8712},
+                {"type":"node","id":4,"lat":19.1297,"lon":72.8712},
+                {"type":"node","id":5,"lat":19.1296,"lon":72.8705,"tags":{"natural":"tree","height":"9","diameter_crown":"5.0","leaf_type":"broadleaved"}},
+                {"type":"node","id":6,"lat":19.1295,"lon":72.8704,"tags":{"natural":"tree","height":"11","leaf_type":"needleleaved"}},
+                {"type":"way","id":100,"nodes":[1,2],"tags":{"highway":"service","name":"Takshila Colony Lane"}},
+                {"type":"way","id":101,"nodes":[2,3],"tags":{"highway":"footway"}},
+                {"type":"way","id":102,"nodes":[3,4],"tags":{"highway":"steps"}},
+                {"type":"way","id":200,"nodes":[1,2,3,4,1],"tags":{"building":"residential","building:levels":"3","roof:shape":"gabled","roof:height":"3.5","roof:colour":"terracotta"}}
+              ]
+            }
+        """.trimIndent()
+
+        val bundle = com.example.core.maps.Osm3dSceneEngine.parseOverpassLocalSceneJson(
+            jsonText = overpassSceneJson,
+            center = com.example.core.maps.GeoPoint(19.1297, 72.8707),
+        )
+        assertEquals(3, bundle.pathwaysCount)
+        assertEquals(1, bundle.roofsCount)
+        assertEquals(2, bundle.treesCount)
+
+        val pathsFc = org.json.JSONObject(bundle.pathwaysGeoJson).getJSONArray("features")
+        assertEquals(3, pathsFc.length())
+        assertEquals("service", pathsFc.getJSONObject(0).getJSONObject("properties").getString("kind"))
+        assertEquals("footpath", pathsFc.getJSONObject(1).getJSONObject("properties").getString("kind"))
+        assertEquals("steps", pathsFc.getJSONObject(2).getJSONObject("properties").getString("kind"))
+
+        // 1 gabled roof -> 5 ascending 3D stepped extrusion tiers
+        val roofsFc = org.json.JSONObject(bundle.roofsGeoJson).getJSONArray("features")
+        assertEquals(5, roofsFc.length())
+        val tier0 = roofsFc.getJSONObject(0).getJSONObject("properties")
+        val tier4 = roofsFc.getJSONObject(4).getJSONObject("properties")
+        org.junit.Assert.assertTrue(tier0.getDouble("height") > tier0.getDouble("base"))
+        org.junit.Assert.assertTrue(tier4.getDouble("base") > tier0.getDouble("base"))
+
+        // 1 broadleaf tree (1 trunk + 3 canopy tiers = 4) + 1 conifer tree (1 trunk + 4 cone tiers = 5) = 9 features
+        val treesFc = org.json.JSONObject(bundle.treesGeoJson).getJSONArray("features")
+        assertEquals(9, treesFc.length())
+    }
+
+    @Test
     fun maps3D_opensFullScreenFromProLabAndTogglesLayersAndMeasureTool() {
         composeTestRule.setContent {
             ClipperTheme {

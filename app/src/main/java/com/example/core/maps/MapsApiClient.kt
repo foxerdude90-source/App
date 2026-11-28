@@ -194,6 +194,35 @@ class MapsApiClient(
         runCatching { MapsGeoMath.parseOverpassPoisJson(body, center, category) }.getOrDefault(emptyList())
     }
 
+    suspend fun fetchLocalOsm3dScene(
+        center: GeoPoint,
+        radiusMeters: Int = 340,
+    ): OsmLocalSceneBundle? = withContext(Dispatchers.IO) {
+        val r = radiusMeters.coerceIn(150, 500)
+        val query = String.format(
+            Locale.US,
+            "[out:json][timeout:10];(" +
+                "way[\"highway\"~\"^(service|living_street|footway|pedestrian|path|steps|track)$\"](around:%d,%.5f,%.5f);" +
+                "way[\"building\"][\"roof:shape\"](around:%d,%.5f,%.5f);" +
+                "node[\"natural\"=\"tree\"](around:%d,%.5f,%.5f);" +
+                ");out body;>;out skel qt;",
+            r, center.lat, center.lng,
+            r, center.lat, center.lng,
+            r, center.lat, center.lng,
+        )
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val mirrors = listOf(
+            "https://overpass-api.de/api/interpreter?data=$encoded",
+            "https://overpass.kumi.systems/api/interpreter?data=$encoded",
+        )
+        for (url in mirrors) {
+            val body = executeGet(url) ?: continue
+            val parsed = runCatching { Osm3dSceneEngine.parseOverpassLocalSceneJson(body, center) }.getOrNull()
+            if (parsed != null) return@withContext parsed
+        }
+        null
+    }
+
     suspend fun fetchLocalWeather(point: GeoPoint): LocalWeatherSnapshot? = withContext(Dispatchers.IO) {
         val url = String.format(
             Locale.US,

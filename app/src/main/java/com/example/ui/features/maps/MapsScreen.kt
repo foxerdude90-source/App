@@ -657,6 +657,7 @@ fun MapsScreen(
                             onSelectStyle = viewModel::selectStylePreset,
                             onToggleTerrain3d = viewModel::toggleTerrain3d,
                             onToggleBuildings3d = viewModel::toggleBuildings3d,
+                            onToggleScene3d = viewModel::toggleScene3d,
                             onToggleTransitOverlay = viewModel::toggleTransitOverlay,
                             onToggleUnits = viewModel::toggleUnits,
                             onClose = { viewModel.setShowLayersSheet(false) },

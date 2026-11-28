@@ -18,6 +18,7 @@ import com.example.core.maps.MapsApiClient
 import com.example.core.maps.MapsGeoMath
 import com.example.core.maps.NavigationRoute
 import com.example.core.maps.NearbyPoi
+import com.example.core.maps.Osm3dSceneEngine
 import com.example.core.maps.PlaceResult
 import com.example.core.maps.PoiCategory
 import com.example.core.maps.SavedPlaceBookmark
@@ -59,9 +60,17 @@ data class MapsUiState(
     val cameraMode: MapCameraMode = MapCameraMode.FREE,
     val terrain3dEnabled: Boolean = false,
     val buildings3dEnabled: Boolean = true,
+    val scene3dEnabled: Boolean = true,
     val globeProjectionEnabled: Boolean = false,
     val transitOverlayEnabled: Boolean = false,
     val useImperialUnits: Boolean = false,
+    // Live OSM Micro-Pathways (colony service/footways) + 3D Pitched Roofs + 3D Trees
+    val osmMicroPathwaysGeoJson: String = Osm3dSceneEngine.EMPTY_FEATURE_COLLECTION,
+    val osm3dRoofsGeoJson: String = Osm3dSceneEngine.EMPTY_FEATURE_COLLECTION,
+    val osm3dTreesGeoJson: String = Osm3dSceneEngine.EMPTY_FEATURE_COLLECTION,
+    val osmScenePathCount: Int = 0,
+    val osmSceneRoofCount: Int = 0,
+    val osmSceneTreeCount: Int = 0,
     // Genuine MapLibre Region Rendering Telemetry
     val isRegionRendering: Boolean = false,
     val renderErrorText: String? = null,
@@ -151,7 +160,9 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
     private var routeJob: Job? = null
     private var poiJob: Job? = null
     private var weatherJob: Job? = null
+    private var osmSceneJob: Job? = null
     private var lastWeatherPoint: GeoPoint? = null
+    private var lastOsmScenePoint: GeoPoint? = null
     private var lastRerouteMs: Long = 0L
     private var lastSpokenStepIndex: Int = -1
     private var snappedInitialFix: Boolean = false
@@ -206,6 +217,7 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isMapReady = true) }
         val target = _uiState.value.liveLocation?.point ?: _uiState.value.mapCenter
         fetchWeatherIfNeeded(target)
+        fetchLocalOsm3dSceneIfNeeded(target, _uiState.value.mapZoom)
         _uiState.value.liveLocation?.let { loc ->
             dispatchCamera(MapCameraCommand.FlyTo(loc.point, zoom = 16.0, pitch = 52.0, bearing = _uiState.value.effectiveHeadingDeg.toDouble()))
         }
@@ -222,6 +234,7 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         fetchWeatherIfNeeded(center)
+        fetchLocalOsm3dSceneIfNeeded(center, zoom)
     }
 
     fun onUserDetachedCamera() {
@@ -380,6 +393,14 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
             globeProjectionEnabled = next,
             cameraMode = if (next) MapCameraMode.FREE else it.cameraMode,
         )
+    }
+    fun toggleScene3d() {
+        val next = !_uiState.value.scene3dEnabled
+        _uiState.update { it.copy(scene3dEnabled = next) }
+        if (next) {
+            lastOsmScenePoint = null
+            fetchLocalOsm3dSceneIfNeeded(_uiState.value.mapCenter, _uiState.value.mapZoom)
+        }
     }
     fun toggleUnits() = _uiState.update { it.copy(useImperialUnits = !it.useImperialUnits) }
     fun onRenderStateChanged(isRendering: Boolean, errorText: String? = null) {
@@ -779,6 +800,33 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
             val snap = api.fetchLocalWeather(point)
             if (snap != null) {
                 _uiState.update { it.copy(weather = snap) }
+            }
+        }
+    }
+
+    /**
+     * Streams real local OSM colony pathways (service, living_street, footway, pedestrian, steps),
+     * 3D pitched/complex roof shapes (`roof:shape`), and 3D `natural=tree` nodes automatically when
+     * zoomed into neighborhood scale (z >= 14.8). Cached by 170m radius to keep Overpass fast & polite.
+     */
+    private fun fetchLocalOsm3dSceneIfNeeded(center: GeoPoint, zoom: Double) {
+        if (!_uiState.value.scene3dEnabled || zoom < 14.8) return
+        val last = lastOsmScenePoint
+        if (last != null && MapsGeoMath.haversineMeters(last, center) < 170.0) return
+        osmSceneJob?.cancel()
+        osmSceneJob = viewModelScope.launch {
+            delay(550L)
+            val bundle = api.fetchLocalOsm3dScene(center, radiusMeters = 340) ?: return@launch
+            lastOsmScenePoint = center
+            _uiState.update {
+                it.copy(
+                    osmMicroPathwaysGeoJson = bundle.pathwaysGeoJson,
+                    osm3dRoofsGeoJson = bundle.roofsGeoJson,
+                    osm3dTreesGeoJson = bundle.treesGeoJson,
+                    osmScenePathCount = bundle.pathwaysCount,
+                    osmSceneRoofCount = bundle.roofsCount,
+                    osmSceneTreeCount = bundle.treesCount,
+                )
             }
         }
     }

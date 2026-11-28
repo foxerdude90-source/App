@@ -54,6 +54,7 @@ import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillExtrusionLayer
 import org.maplibre.android.style.layers.FillLayer
+import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
@@ -62,6 +63,7 @@ import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.sources.TileSet
+import org.maplibre.android.style.sources.VectorSource
 
 private const val SRC_ROUTES = "clipper-routes-src"
 private const val SRC_BREADCRUMB = "clipper-breadcrumb-src"
@@ -70,6 +72,21 @@ private const val SRC_POIS = "clipper-pois-src"
 private const val SRC_PIN = "clipper-pin-src"
 private const val SRC_VEHICLE = "clipper-vehicle-src"
 private const val SRC_TRANSIT_OVERLAY = "clipper-transit-rail-src"
+private const val SRC_OSM_MICRO_PATHS = "clipper-osm-micro-paths-src"
+private const val SRC_OSM_3D_ROOFS = "clipper-osm-3d-roofs-src"
+private const val SRC_OSM_3D_TREES = "clipper-osm-3d-trees-src"
+
+private const val LAYER_VEC_SERVICE_CASING = "clipper-vec-colony-service-casing"
+private const val LAYER_VEC_SERVICE_FILL = "clipper-vec-colony-service-fill"
+private const val LAYER_VEC_FOOTPATH_CASING = "clipper-vec-colony-footpath-casing"
+private const val LAYER_VEC_FOOTPATH_DASH = "clipper-vec-colony-footpath-dash"
+private const val LAYER_VEC_WOOD_CANOPY_3D = "clipper-vec-wood-canopy-3d"
+private const val LAYER_OSM_MICRO_SERVICE_CASING = "clipper-osm-micro-service-casing"
+private const val LAYER_OSM_MICRO_SERVICE_FILL = "clipper-osm-micro-service-fill"
+private const val LAYER_OSM_MICRO_FOOTPATH = "clipper-osm-micro-footpath"
+private const val LAYER_OSM_MICRO_STEPS = "clipper-osm-micro-steps"
+private const val LAYER_OSM_3D_ROOFS = "clipper-osm-3d-roofs"
+private const val LAYER_OSM_3D_TREES = "clipper-osm-3d-trees"
 
 private const val LAYER_TRANSIT_OVERLAY = "clipper-transit-rail-layer"
 private const val LAYER_ROUTE_ALT = "clipper-route-alt"
@@ -200,11 +217,13 @@ fun MapViewWrapper(
         val builder = buildFreeStyleBuilder(state.stylePreset, state.terrain3dEnabled)
         map.setStyle(builder) { style ->
             if (state.stylePreset == MapStylePreset.LIBERTY || state.stylePreset == MapStylePreset.BRIGHT) {
-                enhanceVectorRoadAndPathwayVisibility(style)
+                enhanceVectorRoadAndPathwayVisibility(style, isDarkStyle = state.stylePreset.isDark, scene3dEnabled = state.scene3dEnabled)
             }
             ensureOverlaySourcesAndLayers(
                 style = style,
+                isDarkStyle = state.stylePreset.isDark,
                 buildings3dEnabled = state.buildings3dEnabled,
+                scene3dEnabled = state.scene3dEnabled,
                 transitOverlayEnabled = state.transitOverlayEnabled,
             )
             loadedStyle = style
@@ -216,6 +235,20 @@ fun MapViewWrapper(
     LaunchedEffect(loadedStyle, state.buildings3dEnabled) {
         val style = loadedStyle ?: return@LaunchedEffect
         apply3dBuildingsVisibility(style, state.buildings3dEnabled)
+    }
+
+    // Sync 3D Roofs, 3D Trees & Live Colony Micro-Pathways visibility without reloading the style
+    LaunchedEffect(loadedStyle, state.scene3dEnabled) {
+        val style = loadedStyle ?: return@LaunchedEffect
+        applyScene3dVisibility(style, state.scene3dEnabled)
+    }
+
+    // Sync live Overpass OSM Colony Micro-Pathways, Pitched 3D Roofs & 3D Trees GeoJSON
+    LaunchedEffect(loadedStyle, state.osmMicroPathwaysGeoJson, state.osm3dRoofsGeoJson, state.osm3dTreesGeoJson) {
+        val style = loadedStyle ?: return@LaunchedEffect
+        updateSourceGeoJson(style, SRC_OSM_MICRO_PATHS, state.osmMicroPathwaysGeoJson)
+        updateSourceGeoJson(style, SRC_OSM_3D_ROOFS, state.osm3dRoofsGeoJson)
+        updateSourceGeoJson(style, SRC_OSM_3D_TREES, state.osm3dTreesGeoJson)
     }
 
     // Sync Transit & Rail overlay layer visibility without reloading the style
@@ -643,22 +676,31 @@ private fun buildTopoReliefStyleJson(withHillshade: Boolean): String {
 }
 
 /**
- * Enhances OpenFreeMap vector styles so residential lanes, narrow alleys, service roads, tracks,
- * and pedestrian footpaths have crisp, visible contrast instead of fading into the cream background.
+ * Enhances OpenFreeMap / OpenMapTiles vector styles so narrow residential colony lanes, service roads
+ * (including untagged highway=service without service=alley/driveway), living_streets, footways,
+ * pedestrian passages, and tracks render clearly starting at medium zoom (z12+) instead of staying hidden.
+ * Also adds a lightweight 3D wood/park canopy extrusion from OpenMapTiles landcover tiles.
  */
-private fun enhanceVectorRoadAndPathwayVisibility(style: Style) {
+private fun enhanceVectorRoadAndPathwayVisibility(
+    style: Style,
+    isDarkStyle: Boolean,
+    scene3dEnabled: Boolean,
+) {
+    // 1. Lower minZoom & boost contrast on any existing OpenFreeMap road/path layers
     style.layers.forEach { layer ->
         if (layer !is LineLayer) return@forEach
         val id = layer.id.lowercase()
         when {
             id.contains("path") || id.contains("foot") || id.contains("pedestrian") || id.contains("step") -> {
+                layer.minZoom = 12.0f
                 layer.setProperties(
                     PropertyFactory.visibility(Property.VISIBLE),
-                    PropertyFactory.lineColor("#64748B"),
-                    PropertyFactory.lineOpacity(0.92f),
+                    PropertyFactory.lineColor("#475569"),
+                    PropertyFactory.lineOpacity(0.95f),
                 )
             }
-            id.contains("service") || id.contains("track") || id.contains("alley") -> {
+            id.contains("service") || id.contains("track") || id.contains("alley") || id.contains("living") -> {
+                layer.minZoom = 12.0f
                 if (id.contains("casing")) {
                     layer.setProperties(
                         PropertyFactory.visibility(Property.VISIBLE),
@@ -668,12 +710,13 @@ private fun enhanceVectorRoadAndPathwayVisibility(style: Style) {
                 } else {
                     layer.setProperties(
                         PropertyFactory.visibility(Property.VISIBLE),
-                        PropertyFactory.lineColor("#E2E8F0"),
+                        PropertyFactory.lineColor(if (isDarkStyle) "#334155" else "#F8FAFC"),
                         PropertyFactory.lineOpacity(1.0f),
                     )
                 }
             }
             (id.contains("minor") || id.contains("residential") || id.contains("street")) && id.contains("casing") -> {
+                layer.minZoom = 11.5f
                 layer.setProperties(
                     PropertyFactory.visibility(Property.VISIBLE),
                     PropertyFactory.lineColor("#94A3B8"),
@@ -682,11 +725,152 @@ private fun enhanceVectorRoadAndPathwayVisibility(style: Style) {
             }
         }
     }
+
+    // 2. Inject dedicated unfiltered OpenMapTiles `transportation` layers for ALL service/minor/track/path
+    // geometries so colony lanes without service=alley/driveway subtypes are NEVER omitted!
+    val vecSourceId = style.sources.firstOrNull { it.id == "openmaptiles" || it is VectorSource }?.id ?: return
+    val belowBuildingsAnchor = style.layers.firstOrNull {
+        it is FillExtrusionLayer || it.id.contains("building", ignoreCase = true) || it is SymbolLayer
+    }?.id
+
+    val serviceMinorFilter = Expression.any(
+        Expression.eq(Expression.get("class"), Expression.literal("service")),
+        Expression.eq(Expression.get("class"), Expression.literal("minor")),
+        Expression.eq(Expression.get("class"), Expression.literal("track")),
+    )
+    val pathFilter = Expression.eq(Expression.get("class"), Expression.literal("path"))
+
+    if (style.getLayer(LAYER_VEC_SERVICE_CASING) == null) {
+        val layer = LineLayer(LAYER_VEC_SERVICE_CASING, vecSourceId).apply {
+            sourceLayer = "transportation"
+            minZoom = 12.0f
+            setFilter(serviceMinorFilter)
+            setProperties(
+                PropertyFactory.lineColor(if (isDarkStyle) "#475569" else "#94A3B8"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(12, 1.8f),
+                        Expression.stop(14, 3.8f),
+                        Expression.stop(16, 7.2f),
+                        Expression.stop(18, 12.5f),
+                    ),
+                ),
+                PropertyFactory.lineOpacity(0.92f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    if (style.getLayer(LAYER_VEC_SERVICE_FILL) == null) {
+        val layer = LineLayer(LAYER_VEC_SERVICE_FILL, vecSourceId).apply {
+            sourceLayer = "transportation"
+            minZoom = 12.0f
+            setFilter(serviceMinorFilter)
+            setProperties(
+                PropertyFactory.lineColor(if (isDarkStyle) "#1E293B" else "#FFFFFF"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(12, 1.0f),
+                        Expression.stop(14, 2.4f),
+                        Expression.stop(16, 5.2f),
+                        Expression.stop(18, 9.8f),
+                    ),
+                ),
+                PropertyFactory.lineOpacity(0.98f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    if (style.getLayer(LAYER_VEC_FOOTPATH_CASING) == null) {
+        val layer = LineLayer(LAYER_VEC_FOOTPATH_CASING, vecSourceId).apply {
+            sourceLayer = "transportation"
+            minZoom = 12.5f
+            setFilter(pathFilter)
+            setProperties(
+                PropertyFactory.lineColor(if (isDarkStyle) "#0F172A" else "#FFFFFF"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(13, 2.2f),
+                        Expression.stop(16, 4.2f),
+                        Expression.stop(18, 6.2f),
+                    ),
+                ),
+                PropertyFactory.lineOpacity(0.88f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    if (style.getLayer(LAYER_VEC_FOOTPATH_DASH) == null) {
+        val layer = LineLayer(LAYER_VEC_FOOTPATH_DASH, vecSourceId).apply {
+            sourceLayer = "transportation"
+            minZoom = 12.5f
+            setFilter(pathFilter)
+            setProperties(
+                PropertyFactory.lineColor(if (isDarkStyle) "#94A3B8" else "#475569"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(13, 1.2f),
+                        Expression.stop(16, 2.3f),
+                        Expression.stop(18, 3.4f),
+                    ),
+                ),
+                PropertyFactory.lineDasharray(arrayOf(2.0f, 1.3f)),
+                PropertyFactory.lineOpacity(0.95f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    // 3. Instant 3D Park/Wood Canopy Extrusion directly from OpenMapTiles landcover tiles
+    if (style.getLayer(LAYER_VEC_WOOD_CANOPY_3D) == null) {
+        val woodAnchor = style.layers.firstOrNull { it is SymbolLayer }?.id
+        val woodLayer = FillExtrusionLayer(LAYER_VEC_WOOD_CANOPY_3D, vecSourceId).apply {
+            sourceLayer = "landcover"
+            minZoom = 13.5f
+            setFilter(Expression.eq(Expression.get("class"), Expression.literal("wood")))
+            setProperties(
+                PropertyFactory.fillExtrusionColor("#15803D"),
+                PropertyFactory.fillExtrusionHeight(5.2f),
+                PropertyFactory.fillExtrusionBase(0.0f),
+                PropertyFactory.fillExtrusionOpacity(0.42f),
+                PropertyFactory.fillExtrusionVerticalGradient(true),
+                PropertyFactory.visibility(if (scene3dEnabled) Property.VISIBLE else Property.NONE),
+            )
+        }
+        addLayerSafelyBelow(style, woodLayer, woodAnchor)
+    }
+}
+
+private fun addLayerSafelyBelow(style: Style, layer: Layer, belowId: String?) {
+    if (belowId != null && style.getLayer(belowId) != null) {
+        style.addLayerBelow(layer, belowId)
+    } else {
+        style.addLayer(layer)
+    }
 }
 
 private fun ensureOverlaySourcesAndLayers(
     style: Style,
+    isDarkStyle: Boolean,
     buildings3dEnabled: Boolean,
+    scene3dEnabled: Boolean,
     transitOverlayEnabled: Boolean,
 ) {
     apply3dBuildingsVisibility(style, buildings3dEnabled)
@@ -724,10 +908,151 @@ private fun ensureOverlaySourcesAndLayers(
     }
 
     val emptyFc = """{"type":"FeatureCollection","features":[]}"""
-    listOf(SRC_ROUTES, SRC_BREADCRUMB, SRC_MEASURE, SRC_POIS, SRC_PIN, SRC_VEHICLE).forEach { id ->
+    listOf(
+        SRC_OSM_MICRO_PATHS,
+        SRC_OSM_3D_ROOFS,
+        SRC_OSM_3D_TREES,
+        SRC_ROUTES,
+        SRC_BREADCRUMB,
+        SRC_MEASURE,
+        SRC_POIS,
+        SRC_PIN,
+        SRC_VEHICLE,
+    ).forEach { id ->
         if (style.getSource(id) == null) {
             style.addSource(GeoJsonSource(id, emptyFc))
         }
+    }
+
+    val sceneVis = if (scene3dEnabled) Property.VISIBLE else Property.NONE
+    val belowBuildingsAnchor = style.layers.firstOrNull {
+        it is FillExtrusionLayer || it.id.contains("building", ignoreCase = true) || it is SymbolLayer
+    }?.id
+
+    // Live Overpass Colony Service Roads & Living Streets (unfiltered OSM ground-truth!)
+    if (style.getLayer(LAYER_OSM_MICRO_SERVICE_CASING) == null) {
+        val layer = LineLayer(LAYER_OSM_MICRO_SERVICE_CASING, SRC_OSM_MICRO_PATHS).apply {
+            minZoom = 14.2f
+            setFilter(
+                Expression.any(
+                    Expression.eq(Expression.get("kind"), Expression.literal("service")),
+                    Expression.eq(Expression.get("kind"), Expression.literal("living_street")),
+                ),
+            )
+            setProperties(
+                PropertyFactory.visibility(sceneVis),
+                PropertyFactory.lineColor(if (isDarkStyle) "#64748B" else "#94A3B8"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(14, 3.6f),
+                        Expression.stop(16, 6.8f),
+                        Expression.stop(18, 11.5f),
+                    ),
+                ),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    if (style.getLayer(LAYER_OSM_MICRO_SERVICE_FILL) == null) {
+        val layer = LineLayer(LAYER_OSM_MICRO_SERVICE_FILL, SRC_OSM_MICRO_PATHS).apply {
+            minZoom = 14.2f
+            setFilter(
+                Expression.any(
+                    Expression.eq(Expression.get("kind"), Expression.literal("service")),
+                    Expression.eq(Expression.get("kind"), Expression.literal("living_street")),
+                ),
+            )
+            setProperties(
+                PropertyFactory.visibility(sceneVis),
+                PropertyFactory.lineColor(if (isDarkStyle) "#283548" else "#FFFFFF"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(14, 2.2f),
+                        Expression.stop(16, 4.8f),
+                        Expression.stop(18, 8.8f),
+                    ),
+                ),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    if (style.getLayer(LAYER_OSM_MICRO_FOOTPATH) == null) {
+        val layer = LineLayer(LAYER_OSM_MICRO_FOOTPATH, SRC_OSM_MICRO_PATHS).apply {
+            minZoom = 14.4f
+            setFilter(Expression.eq(Expression.get("kind"), Expression.literal("footpath")))
+            setProperties(
+                PropertyFactory.visibility(sceneVis),
+                PropertyFactory.lineColor(if (isDarkStyle) "#CBD5E1" else "#475569"),
+                PropertyFactory.lineWidth(
+                    Expression.interpolate(
+                        Expression.linear(),
+                        Expression.zoom(),
+                        Expression.stop(14, 1.5f),
+                        Expression.stop(16, 2.6f),
+                        Expression.stop(18, 3.8f),
+                    ),
+                ),
+                PropertyFactory.lineDasharray(arrayOf(2.0f, 1.2f)),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    if (style.getLayer(LAYER_OSM_MICRO_STEPS) == null) {
+        val layer = LineLayer(LAYER_OSM_MICRO_STEPS, SRC_OSM_MICRO_PATHS).apply {
+            minZoom = 14.5f
+            setFilter(Expression.eq(Expression.get("kind"), Expression.literal("steps")))
+            setProperties(
+                PropertyFactory.visibility(sceneVis),
+                PropertyFactory.lineColor("#D97706"),
+                PropertyFactory.lineWidth(3.0f),
+                PropertyFactory.lineDasharray(arrayOf(0.8f, 0.8f)),
+            )
+        }
+        addLayerSafelyBelow(style, layer, belowBuildingsAnchor)
+    }
+
+    // Live OSM 3D Pitched / Gabled / Hipped / Pyramidal / Dome Roofs (`roof:shape`)
+    if (style.getLayer(LAYER_OSM_3D_ROOFS) == null) {
+        val roofLayer = FillExtrusionLayer(LAYER_OSM_3D_ROOFS, SRC_OSM_3D_ROOFS).apply {
+            minZoom = 14.5f
+            setProperties(
+                PropertyFactory.visibility(sceneVis),
+                PropertyFactory.fillExtrusionColor(Expression.get("color")),
+                PropertyFactory.fillExtrusionBase(Expression.get("base")),
+                PropertyFactory.fillExtrusionHeight(Expression.get("height")),
+                PropertyFactory.fillExtrusionOpacity(0.95f),
+                PropertyFactory.fillExtrusionVerticalGradient(true),
+            )
+        }
+        style.addLayer(roofLayer)
+    }
+
+    // Live OSM 3D Trees (Bark Trunk + Multi-Tier Conifer / Broadleaf Canopy from `natural=tree`)
+    if (style.getLayer(LAYER_OSM_3D_TREES) == null) {
+        val treeLayer = FillExtrusionLayer(LAYER_OSM_3D_TREES, SRC_OSM_3D_TREES).apply {
+            minZoom = 14.5f
+            setProperties(
+                PropertyFactory.visibility(sceneVis),
+                PropertyFactory.fillExtrusionColor(Expression.get("color")),
+                PropertyFactory.fillExtrusionBase(Expression.get("base")),
+                PropertyFactory.fillExtrusionHeight(Expression.get("height")),
+                PropertyFactory.fillExtrusionOpacity(0.92f),
+                PropertyFactory.fillExtrusionVerticalGradient(true),
+            )
+        }
+        style.addLayer(treeLayer)
     }
 
     if (style.getLayer(LAYER_ROUTE_ALT) == null) {
@@ -901,10 +1226,27 @@ private fun ensureOverlaySourcesAndLayers(
 
 private fun apply3dBuildingsVisibility(style: Style, enabled: Boolean) {
     val vis = if (enabled) Property.VISIBLE else Property.NONE
+    val nonBuildingExtrusions = setOf(LAYER_OSM_3D_ROOFS, LAYER_OSM_3D_TREES, LAYER_VEC_WOOD_CANOPY_3D)
     style.layers.forEach { layer ->
+        if (layer.id in nonBuildingExtrusions) return@forEach
         if (layer is FillExtrusionLayer || layer.id.contains("building-3d", ignoreCase = true)) {
             layer.setProperties(PropertyFactory.visibility(vis))
         }
+    }
+}
+
+private fun applyScene3dVisibility(style: Style, enabled: Boolean) {
+    val vis = if (enabled) Property.VISIBLE else Property.NONE
+    listOf(
+        LAYER_VEC_WOOD_CANOPY_3D,
+        LAYER_OSM_MICRO_SERVICE_CASING,
+        LAYER_OSM_MICRO_SERVICE_FILL,
+        LAYER_OSM_MICRO_FOOTPATH,
+        LAYER_OSM_MICRO_STEPS,
+        LAYER_OSM_3D_ROOFS,
+        LAYER_OSM_3D_TREES,
+    ).forEach { id ->
+        style.getLayer(id)?.setProperties(PropertyFactory.visibility(vis))
     }
 }
 
@@ -919,6 +1261,9 @@ private fun syncAllOverlaysToStyle(style: Style, state: MapsUiState) {
         val iconName = if (state.cameraMode == MapCameraMode.TESLA_3D) IMG_VEHICLE_EV else IMG_USER_BLUE_ARROW
         updateSourceGeoJson(style, SRC_VEHICLE, buildVehicleGeoJson(loc.point, state.effectiveHeadingDeg, loc.accuracyMeters, iconName))
     }
+    updateSourceGeoJson(style, SRC_OSM_MICRO_PATHS, state.osmMicroPathwaysGeoJson)
+    updateSourceGeoJson(style, SRC_OSM_3D_ROOFS, state.osm3dRoofsGeoJson)
+    updateSourceGeoJson(style, SRC_OSM_3D_TREES, state.osm3dTreesGeoJson)
     updateSourceGeoJson(style, SRC_ROUTES, buildRoutesGeoJson(state.routes, state.activeRouteIndex))
     updateSourceGeoJson(style, SRC_PIN, buildSearchPinGeoJson(state.selectedPlace))
     updateSourceGeoJson(style, SRC_POIS, buildPoisGeoJson(state.nearbyPois))
