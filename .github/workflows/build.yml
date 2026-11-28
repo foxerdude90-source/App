@@ -1,4 +1,4 @@
-name: Build Clipper Debug APK
+name: Build Clipper Signed Release APK
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-apk:
-    name: Build & Test Debug APK
+    name: Build, Test & Sign Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -56,13 +56,23 @@ jobs:
       - name: Run unit & Robolectric tests
         run: gradle :app:testDebugUnitTest --no-daemon
 
-      - name: Assemble Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+      - name: Assemble Release APK
+        run: gradle :app:assembleRelease --no-daemon
 
-      - name: Upload Clipper Debug APK artifact
+      - name: Sign Release APK
+        id: sign_app
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload Clipper Signed Release APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clipper-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: clipper-signed-release
+          path: ${{ steps.sign_app.outputs.signedReleaseFile }}
           if-no-files-found: error
           retention-days: 14
