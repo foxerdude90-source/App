@@ -31,8 +31,8 @@ jobs:
             exit 1
           fi
           yes | "$SDKMANAGER" --sdk_root="$SDK_DIR" --licenses > /dev/null 2>&1 || true
-          "$SDKMANAGER" --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-36.1" "build-tools;36.0.0" || \
-          "$SDKMANAGER" --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          "$SDKMANAGER" --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-36.1" "build-tools;36.0.0" "build-tools;35.0.0" || \
+          "$SDKMANAGER" --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-36" "build-tools;36.0.0" "build-tools;35.0.0"
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -57,21 +57,20 @@ jobs:
         run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Assemble Release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          TEMP_KEYSTORE="$(mktemp /tmp/ci-release-XXXX.jks)"
-          rm -f "$TEMP_KEYSTORE"
-          trap 'rm -f "$TEMP_KEYSTORE"' EXIT
-          keytool -genkeypair -noprompt \
-            -keystore "$TEMP_KEYSTORE" \
-            -storepass citemppass \
-            -alias upload \
-            -keypass citemppass \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 1 \
-            -dname "CN=CI,O=Clipper,C=US"
-          KEYSTORE_PATH="$TEMP_KEYSTORE" STORE_PASSWORD=citemppass KEY_PASSWORD=citemppass \
-            gradle :app:assembleRelease --no-daemon
+          REAL_KEYSTORE="${RUNNER_TEMP:-/tmp}/release-keystore.jks"
+          trap 'rm -f "$REAL_KEYSTORE"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$REAL_KEYSTORE"
+          gradle :app:assembleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$REAL_KEYSTORE" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
 
       - name: Sign Release APK
         id: sign_app
@@ -82,6 +81,7 @@ jobs:
           alias: ${{ secrets.KEY_ALIAS }}
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
+          buildToolsVersion: "35.0.0"
 
       - name: Upload Clipper Signed Release APK artifact
         uses: actions/upload-artifact@v4
