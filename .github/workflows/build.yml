@@ -73,20 +73,31 @@ jobs:
             -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
 
       - name: Sign Release APK
-        id: sign_app
-        uses: r0adkll/sign-android-release@v1
-        with:
-          releaseDirectory: app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
-          alias: ${{ secrets.KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
-          buildToolsVersion: "35.0.0"
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          trap 'rm -f release.jks app-release-aligned.apk' EXIT
+          echo "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > release.jks
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          BUILD_TOOLS=$(ls -d "$SDK_DIR"/build-tools/* | sort -V | tail -n 1)
+          UNSIGNED_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          "$BUILD_TOOLS/zipalign" -p -f -v 4 "$UNSIGNED_APK" app-release-aligned.apk
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks release.jks \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out app-release-signed.apk \
+            app-release-aligned.apk
+          rm -f release.jks app-release-aligned.apk
 
       - name: Upload Clipper Signed Release APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: clipper-signed-release
-          path: ${{ steps.sign_app.outputs.signedReleaseFile }}
+          path: app-release-signed.apk
           if-no-files-found: error
           retention-days: 14
