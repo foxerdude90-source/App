@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MergeType
+import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.ShowChart
@@ -83,6 +84,8 @@ import com.example.ui.features.compress.CompressScreen
 import com.example.ui.features.compress.CompressViewModel
 import com.example.ui.features.image.ImageStudioScreen
 import com.example.ui.features.image.ImageStudioViewModel
+import com.example.ui.features.music.MusicDetectorScreen
+import com.example.ui.features.music.MusicDetectorViewModel
 import com.example.ui.features.velocity.VelocityScreen
 import com.example.ui.features.velocity.VelocityViewModel
 import com.example.ui.theme.ClipperAmber
@@ -111,6 +114,7 @@ fun StudioScreen(
     captionsViewModel: CaptionsViewModel,
     velocityViewModel: VelocityViewModel,
     imageStudioViewModel: ImageStudioViewModel,
+    musicDetectorViewModel: MusicDetectorViewModel,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -142,7 +146,18 @@ fun StudioScreen(
             .fillMaxSize()
             .background(StudioSnow),
     ) { activeTool ->
-        if (activeTool == StudioToolId.VELOCITY_STUDIO) {
+        if (activeTool == StudioToolId.MUSIC_DETECTOR) {
+            Column(modifier = Modifier.fillMaxSize().background(StudioSnow)) {
+                Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
+                    ToolWorkspaceHeader(
+                        title = activeTool.title,
+                        subtitle = activeTool.subtitle,
+                        onBack = { viewModel.openTool(null) },
+                    )
+                }
+                MusicDetectorScreen(viewModel = musicDetectorViewModel, modifier = Modifier.weight(1f))
+            }
+        } else if (activeTool == StudioToolId.VELOCITY_STUDIO) {
             Column(modifier = Modifier.fillMaxSize().background(StudioSnow)) {
                 Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) {
                     ToolWorkspaceHeader(
@@ -350,7 +365,10 @@ private fun ProLabHubGrid(
     modifier: Modifier = Modifier,
 ) {
     val tools = StudioToolId.entries.filterNot {
-        it == StudioToolId.MAPS || it == StudioToolId.VELOCITY_STUDIO || it == StudioToolId.IMAGE_STUDIO
+        it == StudioToolId.MAPS ||
+            it == StudioToolId.MUSIC_DETECTOR ||
+            it == StudioToolId.VELOCITY_STUDIO ||
+            it == StudioToolId.IMAGE_STUDIO
     }
     val rows = tools.chunked(2)
 
@@ -381,6 +399,13 @@ private fun ProLabHubGrid(
         item {
             FeaturedMapsToolCard(
                 onClick = { onSelectTool(StudioToolId.MAPS) },
+            )
+        }
+
+        // Featured Song & Music Detector Launcher Card
+        item {
+            FeaturedMusicDetectorCard(
+                onClick = { onSelectTool(StudioToolId.MUSIC_DETECTOR) },
             )
         }
 
@@ -725,8 +750,81 @@ private fun FeaturedMapsToolCard(
     }
 }
 
+@Composable
+private fun FeaturedMusicDetectorCard(
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .testTag(StudioToolId.MUSIC_DETECTOR.tag)
+            .clickable(onClick = onClick),
+        color = StudioWhite,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.25.dp, ClipperEmerald.copy(alpha = 0.45f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(ClipperEmeraldSoft),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.MusicNote,
+                    contentDescription = StudioToolId.MUSIC_DETECTOR.title,
+                    tint = ClipperEmerald,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = StudioToolId.MUSIC_DETECTOR.title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = InkObsidian,
+                    )
+                    Surface(
+                        color = ClipperEmeraldSoft,
+                        shape = RoundedCornerShape(6.dp),
+                    ) {
+                        Text(
+                            text = "2–4s DSP",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                            color = ClipperEmerald,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    text = "Identify songs from live mic, social links or noisy 2–4s clips with spectral denoise, vocal/instrumental isolator, BPM/Key, synced lyrics & offline vault.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = InkSlate,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
 private fun toolVisualMeta(tool: StudioToolId): Triple<ImageVector, Color, Color> = when (tool) {
     StudioToolId.MAPS -> Triple(Icons.Outlined.Map, ClipperCyan, ClipperCyanSoft)
+    StudioToolId.MUSIC_DETECTOR -> Triple(Icons.Outlined.MusicNote, ClipperEmerald, ClipperEmeraldSoft)
     StudioToolId.VELOCITY_STUDIO -> Triple(Icons.Outlined.ShowChart, ClipperIndigo, ClipperIndigoSoft)
     StudioToolId.IMAGE_STUDIO -> Triple(Icons.Outlined.AspectRatio, ClipperMagenta, ClipperMagentaSoft)
     StudioToolId.TRIMMER -> Triple(Icons.Outlined.ContentCut, ClipperIndigo, ClipperIndigoSoft)

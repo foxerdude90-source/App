@@ -1,9 +1,13 @@
 package com.example.ui.features.maps
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +18,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -21,14 +26,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -41,7 +49,11 @@ import androidx.compose.material.icons.outlined.DirectionsSubway
 import androidx.compose.material.icons.outlined.DirectionsWalk
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Navigation
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Straighten
@@ -50,6 +62,7 @@ import androidx.compose.material.icons.outlined.TurnRight
 import androidx.compose.material.icons.outlined.TwoWheeler
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
+import androidx.compose.material.icons.outlined.Work
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -75,7 +88,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -85,10 +100,12 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.core.maps.MapStylePreset
 import com.example.core.maps.MapsGeoMath
 import com.example.core.maps.PlaceResult
 import com.example.core.maps.SavedPlaceBookmark
+import com.example.core.maps.SavedRouteCategory
 import com.example.core.maps.TravelProfile
 import com.example.ui.theme.ClipperAmber
 import com.example.ui.theme.ClipperCyan
@@ -578,6 +595,7 @@ internal fun CompactTelemetryStrip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun PlaceInspectorAndRouteCard(
     state: MapsUiState,
@@ -587,11 +605,20 @@ internal fun PlaceInspectorAndRouteCard(
     onSelectAlternative: (Int) -> Unit,
     onStartNavigation: () -> Unit,
     onToggleBookmark: () -> Unit,
+    onToggleWantToGo: () -> Unit,
+    onSetHome: () -> Unit,
+    onSetWork: () -> Unit,
     onOpenTelemetryDetail: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val isBookmarked = state.savedBookmarks.any { MapsGeoMath.haversineMeters(it.point, place.point) < 25.0 }
+    val isFavorite = state.smartPlaces.any {
+        it.listType == SavedRouteCategory.FAVORITE && MapsGeoMath.haversineMeters(it.point, place.point) < 65.0
+    } || state.savedBookmarks.any { MapsGeoMath.haversineMeters(it.point, place.point) < 25.0 }
+    val isWantToGo = state.smartPlaces.any {
+        it.listType == SavedRouteCategory.WANT_TO_GO && MapsGeoMath.haversineMeters(it.point, place.point) < 65.0
+    }
     val origin = state.liveLocation?.point ?: state.mapCenter
     val straightDist = MapsGeoMath.haversineMeters(origin, place.point)
     val bearingToPlace = MapsGeoMath.initialBearingDegrees(origin, place.point)
@@ -599,16 +626,29 @@ internal fun PlaceInspectorAndRouteCard(
 
     Surface(
         color = StudioWhite,
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(24.dp),
         border = BorderStroke(1.dp, StudioBorder),
         shadowElevation = 10.dp,
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(max = 500.dp)
             .testTag("maps_place_inspector_card"),
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(
+            modifier = Modifier
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Double-tap anywhere on the header to instantly Favorite this location!
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .combinedClickable(
+                        onClick = {},
+                        onDoubleClick = onToggleBookmark,
+                    ),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top,
             ) {
@@ -627,13 +667,18 @@ internal fun PlaceInspectorAndRouteCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    Text(
+                        text = if (isFavorite) "★ Saved in Favorites • In your left Route Inbox" else "Double-tap here to quick-save Favorite",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isFavorite) ClipperRose else SkyPillActiveBg,
+                    )
                 }
                 Row {
-                    IconButton(onClick = onToggleBookmark) {
+                    IconButton(onClick = onToggleBookmark, modifier = Modifier.testTag("maps_place_favorite_button")) {
                         Icon(
-                            imageVector = if (isBookmarked) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
-                            contentDescription = "Save bookmark",
-                            tint = if (isBookmarked) ClipperAmber else InkSlate,
+                            imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                            contentDescription = "Save to Favorites",
+                            tint = if (isFavorite) ClipperRose else InkSlate,
                         )
                     }
                     IconButton(
@@ -649,6 +694,83 @@ internal fun PlaceInspectorAndRouteCard(
                         Icon(Icons.Outlined.Close, contentDescription = "Close place details", tint = InkSlate)
                     }
                 }
+            }
+
+            // Auto-Fetched Real Photo Carousel (Wikimedia Commons / Wikipedia / Live OSM Map Tile)
+            if (place.photoUrls.isNotEmpty()) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    items(place.photoUrls, key = { it }) { url ->
+                        Box(
+                            modifier = Modifier
+                                .width(126.dp)
+                                .height(88.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xFFE2E8F0)),
+                        ) {
+                            AsyncImage(
+                                model = url,
+                                contentDescription = "${place.name} photo",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Quick Sky-Cyan Action Pills (Call, Website, Want to go, Set Home, Set Work)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (place.phone.isNotBlank()) {
+                    SkyActionPill(
+                        label = "Call",
+                        icon = Icons.Outlined.Call,
+                        filled = false,
+                        onClick = {
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${place.phone}")))
+                            }
+                        },
+                    )
+                }
+                if (place.website.isNotBlank()) {
+                    SkyActionPill(
+                        label = "Website",
+                        icon = Icons.Outlined.Language,
+                        filled = false,
+                        onClick = {
+                            runCatching {
+                                val normalized = if (place.website.startsWith("http")) place.website else "https://${place.website}"
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(normalized)))
+                            }
+                        },
+                    )
+                }
+                SkyActionPill(
+                    label = if (isWantToGo) "Want to go ✓" else "Want to go",
+                    icon = Icons.Outlined.Flag,
+                    filled = isWantToGo,
+                    onClick = onToggleWantToGo,
+                )
+                SkyActionPill(
+                    label = "Set Home",
+                    icon = Icons.Outlined.Home,
+                    filled = false,
+                    onClick = onSetHome,
+                )
+                SkyActionPill(
+                    label = "Set Work",
+                    icon = Icons.Outlined.Work,
+                    filled = false,
+                    onClick = onSetWork,
+                )
             }
 
             // Prominent Bigger, Bolder & Clickable Distance + Coordinates Detail Chip

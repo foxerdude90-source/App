@@ -123,6 +123,7 @@ fun MapViewWrapper(
     state: MapsUiState,
     onMapReady: () -> Unit,
     onMapTap: (GeoPoint) -> Unit,
+    onMapDoubleTapSave: (GeoPoint) -> Unit,
     onCameraIdle: (Double, Double, Double, Double, Double) -> Unit,
     onUserDetachedCamera: () -> Unit,
     onPoiClick: (String) -> Unit,
@@ -135,12 +136,14 @@ fun MapViewWrapper(
 
     val latestReady by rememberUpdatedState(onMapReady)
     val latestTap by rememberUpdatedState(onMapTap)
+    val latestDoubleTapSave by rememberUpdatedState(onMapDoubleTapSave)
     val latestIdle by rememberUpdatedState(onCameraIdle)
     val latestDetach by rememberUpdatedState(onUserDetachedCamera)
     val latestPoi by rememberUpdatedState(onPoiClick)
     val latestMeasure by rememberUpdatedState(onMeasurePointAdded)
     val latestRenderState by rememberUpdatedState(onRenderStateChanged)
     val latestIsMeasuring by rememberUpdatedState(state.isMeasuring)
+    val latestDoubleTapSaveEnabled by rememberUpdatedState(state.doubleTapToSaveEnabled)
     val latestCameraMode by rememberUpdatedState(state.cameraMode)
 
     val nativeInitialized = remember(context) {
@@ -249,6 +252,11 @@ fun MapViewWrapper(
         updateSourceGeoJson(style, SRC_OSM_MICRO_PATHS, state.osmMicroPathwaysGeoJson)
         updateSourceGeoJson(style, SRC_OSM_3D_ROOFS, state.osm3dRoofsGeoJson)
         updateSourceGeoJson(style, SRC_OSM_3D_TREES, state.osm3dTreesGeoJson)
+    }
+
+    // Sync Double-Tap-to-Save mode cleanly with MapLibre double-tap zoom gesture
+    LaunchedEffect(mapLibreMap, state.doubleTapToSaveEnabled) {
+        mapLibreMap?.uiSettings?.isDoubleTapGesturesEnabled = !state.doubleTapToSaveEnabled
     }
 
     // Sync Transit & Rail overlay layer visibility without reloading the style
@@ -497,13 +505,30 @@ fun MapViewWrapper(
                         latestIdle(target.latitude, target.longitude, pos.zoom, pos.tilt, pos.bearing)
                     }
 
+                    var lastTapTimeMs = 0L
+                    var lastTapX = 0f
+                    var lastTapY = 0f
                     map.addOnMapClickListener { latLng ->
                         if (latestIsMeasuring) {
                             latestMeasure(GeoPoint(latLng.latitude, latLng.longitude))
                             return@addOnMapClickListener true
                         }
                         val screenPt = map.projection.toScreenLocation(latLng)
-                        val hitPois = map.queryRenderedFeatures(screenPt, LAYER_POI_CIRCLES)
+                        val now = SystemClock.uptimeMillis()
+                        val isDoubleTap = latestDoubleTapSaveEnabled &&
+                            (now - lastTapTimeMs) <= 340L &&
+                            kotlin.math.hypot((screenPt.x - lastTapX).toDouble(), (screenPt.y - lastTapY).toDouble()) < 84.0
+                        lastTapTimeMs = now
+                        lastTapX = screenPt.x
+                        lastTapY = screenPt.y
+
+                        if (isDoubleTap) {
+                            lastTapTimeMs = 0L
+                            latestDoubleTapSave(GeoPoint(latLng.latitude, latLng.longitude))
+                            return@addOnMapClickListener true
+                        }
+
+                        val hitPois = map.queryRenderedFeatures(screenPt, LAYER_POI_CIRCLES, LAYER_POI_LABELS)
                         val tappedPoiId = hitPois.firstOrNull()?.getStringProperty("id")
                         if (!tappedPoiId.isNullOrBlank()) {
                             latestPoi(tappedPoiId)
@@ -906,6 +931,7 @@ private fun ensureOverlaySourcesAndLayers(
     if (style.getImage(IMG_SEARCH_PIN) == null) {
         style.addImage(IMG_SEARCH_PIN, createRed3dPinBitmap())
     }
+    Poi3dPinFactory.registerAllCategoryPins(style)
 
     val emptyFc = """{"type":"FeatureCollection","features":[]}"""
     listOf(
@@ -1157,25 +1183,34 @@ private fun ensureOverlaySourcesAndLayers(
         )
     }
 
+    // Specific 3D-Sculpted Pointed Category Pins (Coffee cup, ATM, Hospital, Fuel, Metro, Shopping, etc.)
     if (style.getLayer(LAYER_POI_CIRCLES) == null) {
         style.addLayer(
-            CircleLayer(LAYER_POI_CIRCLES, SRC_POIS).withProperties(
-                PropertyFactory.circleRadius(13f),
-                PropertyFactory.circleColor("#0F172A"),
-                PropertyFactory.circleStrokeWidth(2.2f),
-                PropertyFactory.circleStrokeColor("#06B6D4"),
+            SymbolLayer(LAYER_POI_CIRCLES, SRC_POIS).withProperties(
+                PropertyFactory.iconImage(Expression.get("pinIcon")),
+                PropertyFactory.iconSize(0.86f),
+                PropertyFactory.iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                PropertyFactory.iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
+                PropertyFactory.iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_VIEWPORT),
+                PropertyFactory.iconAllowOverlap(true),
+                PropertyFactory.iconIgnorePlacement(true),
             ),
         )
     }
 
+    // Crisp Place Name Labels right alongside each 3D Pointed Category Marker
     if (style.getLayer(LAYER_POI_LABELS) == null) {
         style.addLayer(
             SymbolLayer(LAYER_POI_LABELS, SRC_POIS).withProperties(
-                PropertyFactory.textField(Expression.get("badge")),
-                PropertyFactory.textSize(12.5f),
-                PropertyFactory.textColor("#FFFFFF"),
-                PropertyFactory.textAllowOverlap(true),
-                PropertyFactory.textIgnorePlacement(true),
+                PropertyFactory.textField(Expression.get("name")),
+                PropertyFactory.textSize(11.8f),
+                PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
+                PropertyFactory.textOffset(arrayOf(0f, 0.35f)),
+                PropertyFactory.textMaxWidth(9.5f),
+                PropertyFactory.textColor(if (isDarkStyle) "#F8FAFC" else "#0F172A"),
+                PropertyFactory.textHaloColor(if (isDarkStyle) "#0F172A" else "#FFFFFF"),
+                PropertyFactory.textHaloWidth(1.8f),
+                PropertyFactory.textOptional(true),
             ),
         )
     }
@@ -1341,6 +1376,7 @@ private fun buildPoisGeoJson(pois: List<NearbyPoi>): String {
             .put("id", poi.id)
             .put("name", poi.name)
             .put("badge", poi.category.badge)
+            .put("pinIcon", poi.category.pinType.pinImageId)
         val geom = JSONObject()
             .put("type", "Point")
             .put("coordinates", JSONArray().put(poi.point.lng).put(poi.point.lat))

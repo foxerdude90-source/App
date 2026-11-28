@@ -6,6 +6,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
@@ -359,6 +360,22 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("maps_scale_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("maps_allow_location_banner").assertIsDisplayed()
 
+        // Open Left Sidebar Saved Routes Inbox and toggle Double-Tap Map to Favorite
+        composeTestRule.onNodeWithTag("maps_sidebar_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_left_sidebar").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_double_tap_save_toggle").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_sidebar_close").performClick()
+        composeTestRule.waitForIdle()
+
+        // Open Full "More Categories" Directory overlay and close it
+        composeTestRule.onNodeWithTag("maps_more_categories_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_more_categories_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_more_categories_close").performClick()
+        composeTestRule.waitForIdle()
+
         // Tap the bigger speed/heading telemetry strip to open Detailed Telemetry Sheet
         composeTestRule.onNodeWithTag("maps_telemetry_detail_trigger").performClick()
         composeTestRule.waitForIdle()
@@ -385,4 +402,54 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("pro_lab_update_engine_button").assertIsDisplayed()
     }
+
+    @Test
+    fun proLab_songAndMusicDetectorToolLaunchesAndSwitchesModesAndDspFilters() {
+        composeTestRule.setContent {
+            ClipperTheme {
+                ClipperApp()
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("nav_tab_studio").performClick()
+        composeTestRule.waitForIdle()
+
+        // Launch featured Song & Music Detector card
+        composeTestRule.onNodeWithTag("studio_hub_lazy_column")
+            .performScrollToNode(hasTestTag("studio_tool_music_detector"))
+        composeTestRule.onNodeWithTag("studio_tool_music_detector").performClick()
+        composeTestRule.waitForIdle()
+
+        // Default Live Mic mode + DSP Lab controls are visible
+        composeTestRule.onNodeWithTag("music_live_mic_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("music_detector_lazy_column")
+            .performScrollToNode(hasTestTag("music_dsp_clean_denoise"))
+        composeTestRule.onNodeWithTag("music_dsp_clean_denoise").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("music_dsp_vocals_mid").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("music_dsp_instrumental_side").performClick()
+        composeTestRule.waitForIdle()
+
+        // Scroll back to top mode tabs, switch to Social URL mode and verify URL input + scan button
+        composeTestRule.onNodeWithTag("music_detector_lazy_column")
+            .performScrollToNode(hasTestTag("music_mode_social_url"))
+        composeTestRule.onNodeWithTag("music_mode_social_url").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("music_url_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("music_scan_url_button").assertIsDisplayed()
+
+        // Switch to Local File / 2-4s Clip mode
+        composeTestRule.onNodeWithTag("music_mode_local_file").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("music_pick_local_file_button").assertIsDisplayed()
+
+        // Return cleanly to Pro Lab hub
+        composeTestRule.onNodeWithTag("studio_back_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_hub_lazy_column")
+            .performScrollToNode(hasTestTag("studio_tool_music_detector"))
+        composeTestRule.onNodeWithTag("studio_tool_music_detector").assertIsDisplayed()
+    }
 }
+

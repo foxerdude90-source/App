@@ -1,5 +1,11 @@
 package com.example.ui.features.maps
 
+import android.app.Activity
+import android.content.Intent
+import android.speech.RecognizerIntent
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -39,9 +45,14 @@ import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.FiberManualRecord
 import androidx.compose.material.icons.outlined.GpsFixed
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Layers
+import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Straighten
@@ -55,9 +66,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -112,8 +126,61 @@ fun MapsScreen(
         }
     }
 
+    val voiceSearchLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val spoken = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull()
+                ?.trim()
+                .orEmpty()
+            if (spoken.isNotEmpty()) {
+                viewModel.onSearchQueryChanged(spoken)
+                viewModel.submitSearch()
+            }
+        }
+    }
+
+    val launchVoiceSearch: () -> Unit = {
+        runCatching {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_PROMPT, "Search places, coffee, ATMs, or addresses")
+            }
+            voiceSearchLauncher.launch(intent)
+        }
+    }
+
+    // Intercept system back button to dismiss overlays cleanly before leaving Maps
+    val hasActiveOverlay = state.showLeftSidebar || state.showMoreCategories || state.showSearchOverlay ||
+        state.showPoiResultsSheet || state.showLayersSheet || state.showBookmarksSheet || state.showTelemetryDetailSheet
+    BackHandler(enabled = hasActiveOverlay) {
+        when {
+            state.showLeftSidebar -> viewModel.setShowLeftSidebar(false)
+            state.showMoreCategories -> viewModel.setShowMoreCategories(false)
+            state.showSearchOverlay -> viewModel.setShowSearchOverlay(false)
+            state.showLayersSheet -> viewModel.setShowLayersSheet(false)
+            state.showBookmarksSheet -> viewModel.setShowBookmarksSheet(false)
+            state.showTelemetryDetailSheet -> viewModel.setShowTelemetryDetailSheet(false)
+            state.showPoiResultsSheet -> viewModel.setShowPoiResultsSheet(false)
+        }
+    }
+
+    // Auto-dismiss ephemeral status pill so it never permanently crowds the viewport
+    LaunchedEffect(state.statusBanner) {
+        if (state.statusBanner != null) {
+            delay(3600L)
+            viewModel.clearStatusBanner()
+        }
+    }
+
+    val hasTallBottomSheet = state.showLayersSheet || state.showBookmarksSheet ||
+        state.showTelemetryDetailSheet || state.selectedPlace != null || state.isMeasuring ||
+        (state.showPoiResultsSheet && state.activePoiCategory != null)
+
     val isDarkHud = state.stylePreset.isDark || state.isNavigating || state.cameraMode == MapCameraMode.TESLA_3D
-    val hudSurface = if (isDarkHud) Color(0xE80F172A) else Color(0xF6FFFFFF)
+    val hudSurface = if (isDarkHud) Color(0xE80F172A) else Color(0xF8FFFFFF)
     val hudText = if (isDarkHud) StudioWhite else InkObsidian
     val hudSubText = if (isDarkHud) Color(0xFF94A3B8) else InkSlate
     val hudBorder = if (isDarkHud) Color(0x4438BDF8) else StudioBorder
@@ -135,6 +202,7 @@ fun MapsScreen(
             state = state,
             onMapReady = viewModel::onMapReady,
             onMapTap = viewModel::onMapTapOrLongPress,
+            onMapDoubleTapSave = viewModel::onMapDoubleTapSave,
             onCameraIdle = viewModel::onCameraIdle,
             onUserDetachedCamera = viewModel::onUserDetachedCamera,
             onPoiClick = viewModel::onPoiClicked,
@@ -215,10 +283,10 @@ fun MapsScreen(
                         onResetNorth = viewModel::resetNorth,
                     )
                 } else {
-                    // Floating Search Bar + Back Button
+                    // Sleek Google-Maps-Style Floating Pill Search Bar + Left Sidebar Inbox Button + Voice Search
                     Surface(
                         color = hudSurface,
-                        shape = RoundedCornerShape(18.dp),
+                        shape = RoundedCornerShape(28.dp),
                         border = BorderStroke(1.dp, hudBorder),
                         shadowElevation = 6.dp,
                         modifier = Modifier.fillMaxWidth(),
@@ -226,7 +294,7 @@ fun MapsScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             IconButton(
@@ -240,11 +308,48 @@ fun MapsScreen(
                                 )
                             }
 
-                            Box(modifier = Modifier.weight(1f)) {
+                            // Left Sidebar Saved Routes Inbox Trigger (with count badge)
+                            Box(contentAlignment = Alignment.TopEnd) {
+                                IconButton(
+                                    onClick = { viewModel.setShowLeftSidebar(true) },
+                                    modifier = Modifier.testTag("maps_sidebar_button"),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Menu,
+                                        contentDescription = "Open Saved & Auto Routes Inbox",
+                                        tint = hudText,
+                                    )
+                                }
+                                if (state.savedInboxCount > 0) {
+                                    Surface(
+                                        color = ClipperRose,
+                                        shape = CircleShape,
+                                        modifier = Modifier.padding(top = 6.dp, end = 6.dp),
+                                    ) {
+                                        Text(
+                                            text = state.savedInboxCount.coerceAtMost(99).toString(),
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                            ),
+                                            color = StudioWhite,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                        )
+                                    }
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (state.searchQuery.isEmpty()) viewModel.setShowSearchOverlay(true)
+                                    },
+                            ) {
                                 if (state.searchQuery.isEmpty()) {
                                     Text(
-                                        text = "Search places, buses, metro, or lat, lng…",
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        text = "Search here",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
                                         color = hudSubText,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -252,19 +357,30 @@ fun MapsScreen(
                                 }
                                 BasicTextField(
                                     value = state.searchQuery,
-                                    onValueChange = viewModel::onSearchQueryChanged,
+                                    onValueChange = { q ->
+                                        viewModel.onSearchQueryChanged(q)
+                                        if (q.isNotEmpty() && state.showSearchOverlay) {
+                                            viewModel.setShowSearchOverlay(false)
+                                        }
+                                    },
                                     singleLine = true,
-                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = hudText),
+                                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = hudText, fontSize = 16.sp),
                                     cursorBrush = SolidColor(ClipperCyan),
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                     keyboardActions = KeyboardActions(
                                         onSearch = {
                                             keyboardController?.hide()
+                                            viewModel.setShowSearchOverlay(false)
                                             viewModel.submitSearch()
                                         },
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .onFocusChanged { focus ->
+                                            if (focus.isFocused && state.searchQuery.isEmpty()) {
+                                                viewModel.setShowSearchOverlay(true)
+                                            }
+                                        }
                                         .testTag("maps_search_input"),
                                 )
                             }
@@ -279,9 +395,8 @@ fun MapsScreen(
                                 )
                             } else if (state.searchQuery.isNotEmpty()) {
                                 IconButton(onClick = viewModel::clearSearch) {
-                                    Icon(Icons.Outlined.Close, contentDescription = "Clear search", tint = hudSubText, modifier = Modifier.size(19.dp))
+                                    Icon(Icons.Outlined.Close, contentDescription = "Clear search", tint = hudSubText, modifier = Modifier.size(20.dp))
                                 }
-                            } else {
                                 IconButton(
                                     onClick = {
                                         keyboardController?.hide()
@@ -289,17 +404,40 @@ fun MapsScreen(
                                     },
                                     modifier = Modifier.testTag("maps_search_submit_button"),
                                 ) {
-                                    Icon(Icons.Outlined.Search, contentDescription = "Search", tint = ClipperCyan)
+                                    Icon(Icons.Outlined.Search, contentDescription = "Search", tint = SkyPillActiveBg)
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = launchVoiceSearch,
+                                    modifier = Modifier.testTag("maps_voice_search_button"),
+                                ) {
+                                    Icon(Icons.Outlined.Mic, contentDescription = "Voice search", tint = hudText)
                                 }
                             }
                         }
+                    }
+
+                    // Search Focus Quick Sheet (Home ETA | Work | Transit | Recent & Frequent)
+                    AnimatedVisibility(
+                        visible = state.showSearchOverlay && state.searchResults.isEmpty(),
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                    ) {
+                        SearchFocusOverlay(
+                            state = state,
+                            onRouteToSmartPlace = viewModel::routeToSmartPlace,
+                            onSetHomeCurrent = viewModel::setHomeFromCurrentLocation,
+                            onSetWorkCurrent = viewModel::setWorkFromCurrentLocation,
+                            onSelectTransitNearYou = { viewModel.togglePoiCategory(PoiCategory.BUS_STOP) },
+                            onClose = { viewModel.setShowSearchOverlay(false) },
+                        )
                     }
 
                     // Autocomplete Place Results Dropdown
                     AnimatedVisibility(visible = state.searchResults.isNotEmpty(), enter = fadeIn(), exit = fadeOut()) {
                         Surface(
                             color = hudSurface,
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(18.dp),
                             border = BorderStroke(1.dp, hudBorder),
                             shadowElevation = 8.dp,
                             modifier = Modifier
@@ -319,7 +457,7 @@ fun MapsScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     ) {
-                                        Icon(Icons.Outlined.Place, contentDescription = null, tint = ClipperCyan, modifier = Modifier.size(20.dp))
+                                        Icon(Icons.Outlined.Place, contentDescription = null, tint = SkyPillActiveBg, modifier = Modifier.size(20.dp))
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(place.name, style = MaterialTheme.typography.titleSmall, color = hudText, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             Text(place.subtitle, style = MaterialTheme.typography.bodySmall, color = hudSubText, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -339,7 +477,7 @@ fun MapsScreen(
                         onResetNorth = viewModel::resetNorth,
                     )
 
-                    // Pinned Weather Pill (never clips!) + Scrollable POI Chips (Buses, Metro, EV, Fuel, Cafes, Food, Medical, Parking)
+                    // Pinned Weather + Home Quick-Route Chip + Material 3 Finder Chips + "More" Directory Button
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -354,8 +492,9 @@ fun MapsScreen(
                             Surface(
                                 onClick = { viewModel.setShowTelemetryDetailSheet(true) },
                                 color = hudSurface,
-                                shape = RoundedCornerShape(14.dp),
+                                shape = RoundedCornerShape(20.dp),
                                 border = BorderStroke(0.85.dp, hudBorder),
+                                shadowElevation = 2.dp,
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
@@ -382,21 +521,52 @@ fun MapsScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            PoiCategory.entries.forEach { cat ->
+                            // One-Tap Home Route Pill with live ETA when Home is configured
+                            state.homePlace?.let { home ->
+                                val eta = estimateDriveMinutesText(state.liveLocation?.point ?: state.mapCenter, home.point)
+                                Surface(
+                                    onClick = { viewModel.routeToSmartPlace(home) },
+                                    color = hudSurface,
+                                    shape = RoundedCornerShape(20.dp),
+                                    border = BorderStroke(0.9.dp, hudBorder),
+                                    shadowElevation = 2.dp,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Icon(Icons.Outlined.Home, contentDescription = null, tint = SkyPillActiveBg, modifier = Modifier.size(16.dp))
+                                        Text(
+                                            text = "Home • $eta",
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            color = hudText,
+                                        )
+                                    }
+                                }
+                            }
+
+                            PoiCategory.entries.filter { it.isQuickStrip }.forEach { cat ->
                                 val active = state.activePoiCategory == cat
                                 Surface(
                                     onClick = { viewModel.togglePoiCategory(cat) },
-                                    color = if (active) ClipperIndigo else hudSurface,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(0.85.dp, if (active) ClipperCyan else hudBorder),
+                                    color = if (active) SkyPillActiveBg else hudSurface,
+                                    shape = RoundedCornerShape(20.dp),
+                                    border = BorderStroke(0.9.dp, if (active) ClipperCyan else hudBorder),
+                                    shadowElevation = 2.dp,
                                     modifier = Modifier.testTag("maps_poi_${cat.name.lowercase(Locale.US)}"),
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     ) {
-                                        Text(cat.badge, style = MaterialTheme.typography.labelMedium)
+                                        Icon(
+                                            imageVector = poiCategoryMaterialIcon(cat),
+                                            contentDescription = null,
+                                            tint = if (active) StudioWhite else if (isDarkHud) ClipperCyan else InkObsidian,
+                                            modifier = Modifier.size(16.dp),
+                                        )
                                         Text(
                                             text = cat.label,
                                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
@@ -405,11 +575,66 @@ fun MapsScreen(
                                     }
                                 }
                             }
+
+                            // "More" Category Directory Pill (41 Real OSM Categories)
+                            Surface(
+                                onClick = { viewModel.setShowMoreCategories(true) },
+                                color = if (isDarkHud) Color(0xFF1E293B) else SkyPillBg,
+                                shape = RoundedCornerShape(20.dp),
+                                border = BorderStroke(0.9.dp, if (isDarkHud) ClipperCyan.copy(alpha = 0.45f) else SkyPillActiveBg.copy(alpha = 0.25f)),
+                                shadowElevation = 2.dp,
+                                modifier = Modifier.testTag("maps_more_categories_button"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreHoriz,
+                                        contentDescription = "More categories",
+                                        tint = if (isDarkHud) ClipperCyan else SkyPillText,
+                                        modifier = Modifier.size(17.dp),
+                                    )
+                                    Text(
+                                        text = "More",
+                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = if (isDarkHud) ClipperCyan else SkyPillText,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Floating "Search this area" Pill whenever user pans away during an active category search
+                    AnimatedVisibility(visible = state.showSearchThisAreaPill && state.activePoiCategory != null, enter = fadeIn(), exit = fadeOut()) {
+                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Surface(
+                                onClick = viewModel::searchActiveCategoryInCurrentArea,
+                                color = StudioWhite,
+                                shape = RoundedCornerShape(22.dp),
+                                border = BorderStroke(1.dp, SkyPillActiveBg.copy(alpha = 0.35f)),
+                                shadowElevation = 6.dp,
+                                modifier = Modifier.testTag("maps_search_this_area_button"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    Icon(Icons.Outlined.Refresh, contentDescription = null, tint = SkyPillActiveBg, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        text = "Search this area",
+                                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                        color = SkyPillActiveBg,
+                                    )
+                                }
+                            }
                         }
                     }
 
                     // Live GPS Permission Callout (Accompanist Permissions with rationale + Settings fallback)
-                    if (!locationPermissions.hasLocationPermission) {
+                    if (!locationPermissions.hasLocationPermission && !hasTallBottomSheet) {
                         val promptText = when {
                             locationPermissions.isPermanentlyDenied ->
                                 "Location is disabled in Android Settings — open Settings to enable live GPS"
@@ -518,8 +743,6 @@ fun MapsScreen(
                 }
 
                 // Right-Hand Precision Control Rail (Never clips or overlaps Bottom Sheets!)
-                val hasTallBottomSheet = state.showLayersSheet || state.showBookmarksSheet ||
-                    state.showTelemetryDetailSheet || state.selectedPlace != null || state.isMeasuring
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomEnd),
@@ -536,26 +759,28 @@ fun MapsScreen(
                         tag = "maps_layers_button",
                         onClick = { viewModel.setShowLayersSheet(!state.showLayersSheet) },
                     )
-                    MapRailIconButton(
-                        icon = Icons.Outlined.ViewInAr,
-                        contentDescription = "Toggle 3D tilt angle",
-                        active = state.mapPitch > 25.0,
-                        surfaceColor = hudSurface,
-                        contentColor = hudText,
-                        borderColor = hudBorder,
-                        tag = "maps_3d_pitch_button",
-                        onClick = viewModel::togglePitch3d,
-                    )
-                    MapRailIconButton(
-                        icon = Icons.Outlined.Explore,
-                        contentDescription = "Reset compass North",
-                        active = false,
-                        surfaceColor = hudSurface,
-                        contentColor = if (state.mapBearing != 0.0) ClipperRose else hudText,
-                        borderColor = hudBorder,
-                        tag = "maps_compass_button",
-                        onClick = viewModel::resetNorth,
-                    )
+                    if (!hasTallBottomSheet) {
+                        MapRailIconButton(
+                            icon = Icons.Outlined.ViewInAr,
+                            contentDescription = "Toggle 3D tilt angle",
+                            active = state.mapPitch > 25.0,
+                            surfaceColor = hudSurface,
+                            contentColor = hudText,
+                            borderColor = hudBorder,
+                            tag = "maps_3d_pitch_button",
+                            onClick = viewModel::togglePitch3d,
+                        )
+                        MapRailIconButton(
+                            icon = Icons.Outlined.Explore,
+                            contentDescription = "Reset compass North",
+                            active = false,
+                            surfaceColor = hudSurface,
+                            contentColor = if (state.mapBearing != 0.0) ClipperRose else hudText,
+                            borderColor = hudBorder,
+                            tag = "maps_compass_button",
+                            onClick = viewModel::resetNorth,
+                        )
+                    }
                     MapRailIconButton(
                         icon = Icons.Outlined.Straighten,
                         contentDescription = "Distance and area measurement tool",
@@ -708,8 +933,26 @@ fun MapsScreen(
                             onSelectAlternative = viewModel::selectRouteAlternative,
                             onStartNavigation = viewModel::startTeslaNavigation,
                             onToggleBookmark = { viewModel.toggleSaveBookmark(state.selectedPlace!!) },
+                            onToggleWantToGo = { viewModel.toggleWantToGoPlace(state.selectedPlace!!) },
+                            onSetHome = { viewModel.setHomePlace(state.selectedPlace!!) },
+                            onSetWork = { viewModel.setWorkPlace(state.selectedPlace!!) },
                             onOpenTelemetryDetail = { viewModel.setShowTelemetryDetailSheet(true) },
                             onDismiss = viewModel::dismissSelectedPlace,
+                        )
+                    }
+                    state.showPoiResultsSheet && state.activePoiCategory != null -> {
+                        CategoryResultsPopupSheet(
+                            state = state,
+                            category = state.activePoiCategory!!,
+                            onSelectPoi = viewModel::selectNearbyPoi,
+                            onRouteToPoi = viewModel::routeToNearbyPoi,
+                            onToggleFavoritePoi = { poi -> viewModel.toggleFavoritePlace(viewModel.poiToPlaceResult(poi)) },
+                            onToggleSortByName = viewModel::togglePoiSortByName,
+                            onToggleOpenNow = viewModel::togglePoiFilterOpenNow,
+                            onToggleHasPhone = viewModel::togglePoiFilterHasPhone,
+                            onToggleHasWebsite = viewModel::togglePoiFilterHasWebsite,
+                            onToggleWheelchair = viewModel::togglePoiFilterWheelchair,
+                            onClose = viewModel::clearActivePoiCategory,
                         )
                     }
                     else -> {
@@ -728,6 +971,27 @@ fun MapsScreen(
                 }
             }
         }
+
+        // 4. Left Sidebar Slide-Out Inbox for Favorites, 1–4h Auto-Saved Stays, Frequent Routes, Home & Work
+        MapsLeftSidebarDrawer(
+            state = state,
+            onRouteToPlace = viewModel::routeToSmartPlace,
+            onDeleteSmartPlace = viewModel::deleteSmartPlace,
+            onSetHomeCurrent = viewModel::setHomeFromCurrentLocation,
+            onClearHome = viewModel::clearHomePlace,
+            onSetWorkCurrent = viewModel::setWorkFromCurrentLocation,
+            onClearWork = viewModel::clearWorkPlace,
+            onToggleDoubleTapSave = viewModel::toggleDoubleTapToSave,
+            onClose = { viewModel.setShowLeftSidebar(false) },
+        )
+
+        // 5. Full-Screen Material 3 "More Categories" Directory Overlay (41 Live OSM Categories)
+        MoreCategoriesOverlay(
+            visible = state.showMoreCategories,
+            activeCategory = state.activePoiCategory,
+            onSelectCategory = { cat -> viewModel.togglePoiCategory(cat) },
+            onClose = { viewModel.setShowMoreCategories(false) },
+        )
     }
 }
 

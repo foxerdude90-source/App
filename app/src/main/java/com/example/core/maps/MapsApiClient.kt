@@ -4,8 +4,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,6 +24,7 @@ class MapsApiClient(
         .build(),
 ) {
     private val userAgent = "ClipperAndroidMaps/1.0 (OpenStreetMap-Client)"
+    private val photoCache = ConcurrentHashMap<String, List<String>>()
 
     suspend fun searchPlaces(
         query: String,
@@ -178,7 +181,7 @@ class MapsApiClient(
     ): List<NearbyPoi> = withContext(Dispatchers.IO) {
         val query = String.format(
             Locale.US,
-            "[out:json][timeout:10];(node[%s](around:%d,%.5f,%.5f);way[%s](around:%d,%.5f,%.5f););out center 24;",
+            "[out:json][timeout:12];(node[%s](around:%d,%.5f,%.5f);way[%s](around:%d,%.5f,%.5f););out center 36;",
             category.overpassTag,
             radiusMeters,
             center.lat,
@@ -189,9 +192,108 @@ class MapsApiClient(
             center.lng,
         )
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val url = "https://overpass-api.de/api/interpreter?data=$encoded"
-        val body = executeGet(url) ?: return@withContext emptyList()
-        runCatching { MapsGeoMath.parseOverpassPoisJson(body, center, category) }.getOrDefault(emptyList())
+        val mirrors = listOf(
+            "https://overpass-api.de/api/interpreter?data=$encoded",
+            "https://overpass.kumi.systems/api/interpreter?data=$encoded",
+        )
+        for (url in mirrors) {
+            val body = executeGet(url) ?: continue
+            val parsed = runCatching { MapsGeoMath.parseOverpassPoisJson(body, center, category) }.getOrDefault(emptyList())
+            if (parsed.isNotEmpty()) return@withContext parsed
+        }
+        emptyList()
+    }
+
+    /**
+     * Automatically fetches real, open-licensed photographs for any live OSM place using:
+     *  1. Direct OSM `image` / `wikimedia_commons` tags
+     *  2. Wikipedia REST summary thumbnail (when `wikipedia` tag is present)
+     *  3. Wikimedia Commons Search API by real place name + category keyword
+     *  4. Wikimedia Commons Geosearch API around the exact GPS coordinates
+     * Always appends the live OSM Slippy Map preview tile as a guaranteed crisp visual.
+     */
+    suspend fun fetchRealPlacePhotos(
+        name: String,
+        point: GeoPoint,
+        categoryHint: String = "",
+        wikipediaTag: String = "",
+        commonsTag: String = "",
+        directImageUrl: String = "",
+    ): List<String> = withContext(Dispatchers.IO) {
+        val cacheKey = "${name.lowercase(Locale.US)}_${String.format(Locale.US, "%.4f,%.4f", point.lat, point.lng)}"
+        photoCache[cacheKey]?.let { return@withContext it }
+
+        val urls = LinkedHashSet<String>()
+        if (directImageUrl.startsWith("https://")) {
+            urls.add(directImageUrl)
+        }
+        if (commonsTag.startsWith("File:", ignoreCase = true)) {
+            val filePart = commonsTag.substringAfter(":").trim().replace(' ', '_')
+            if (filePart.isNotEmpty()) {
+                urls.add("https://commons.wikimedia.org/wiki/Special:FilePath/${URLEncoder.encode(filePart, "UTF-8")}?width=480")
+            }
+        }
+        if (wikipediaTag.isNotBlank() && urls.size < 3) {
+            val lang = wikipediaTag.substringBefore(":", "en").ifBlank { "en" }
+            val title = wikipediaTag.substringAfter(":", wikipediaTag).trim().replace(' ', '_')
+            val wikiUrl = "https://$lang.wikipedia.org/api/rest_v1/page/summary/${URLEncoder.encode(title, "UTF-8")}"
+            executeGet(wikiUrl)?.let { body ->
+                runCatching {
+                    val thumb = JSONObject(body).optJSONObject("thumbnail")?.optString("source").orEmpty()
+                    if (thumb.startsWith("https://")) urls.add(thumb)
+                }
+            }
+        }
+
+        // Wikimedia Commons Geosearch (real photographs taken near these exact coordinates!)
+        if (urls.size < 3) {
+            val geoUrl = String.format(
+                Locale.US,
+                "https://commons.wikimedia.org/w/api.php?action=query&generator=geosearch&ggscoord=%.5f%%7C%.5f&ggsradius=650&ggslimit=6&ggsnamespace=6&prop=imageinfo&iiprop=url&iiurlwidth=480&format=json",
+                point.lat,
+                point.lng,
+            )
+            executeGet(geoUrl)?.let { body ->
+                extractWikimediaThumbUrls(body).forEach { if (urls.size < 4) urls.add(it) }
+            }
+        }
+
+        // Wikimedia Commons Title Search by real place name (when distinct from generic label)
+        val cleanName = name.trim()
+        if (urls.size < 3 && cleanName.length >= 4 && !cleanName.equals(categoryHint, ignoreCase = true)) {
+            val q = URLEncoder.encode("$cleanName filetype:bitmap", "UTF-8")
+            val searchUrl = "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=$q&gsrnamespace=6&gsrlimit=4&prop=imageinfo&iiprop=url&iiurlwidth=480&format=json"
+            executeGet(searchUrl)?.let { body ->
+                extractWikimediaThumbUrls(body).forEach { if (urls.size < 4) urls.add(it) }
+            }
+        }
+
+        // Always include exact live OSM map preview tile for authentic geographic context
+        urls.add(MapsGeoMath.osmTilePreviewUrl(point, zoom = 17))
+        val finalList = urls.toList().take(4)
+        photoCache[cacheKey] = finalList
+        finalList
+    }
+
+    private fun extractWikimediaThumbUrls(jsonText: String): List<String> {
+        val out = ArrayList<String>()
+        runCatching {
+            val pages = JSONObject(jsonText).optJSONObject("query")?.optJSONObject("pages") ?: return out
+            val keys = pages.keys()
+            while (keys.hasNext()) {
+                val page = pages.optJSONObject(keys.next()) ?: continue
+                val info = page.optJSONArray("imageinfo")?.optJSONObject(0) ?: continue
+                val thumb = info.optString("thumburl", "").ifBlank { info.optString("url", "") }
+                val lower = thumb.lowercase(Locale.US)
+                if (thumb.startsWith("https://") &&
+                    (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp") || lower.contains("/thumb/")) &&
+                    !lower.contains(".svg") && !lower.contains("flag_of") && !lower.contains("map")
+                ) {
+                    out.add(thumb)
+                }
+            }
+        }
+        return out
     }
 
     suspend fun fetchLocalOsm3dScene(

@@ -40,6 +40,7 @@ enum class StudioToolId(
     val tag: String,
 ) {
     MAPS("Maps 3D", "Tesla 3D Drive, satellite, live GPS & turn-by-turn nav", "studio_tool_maps"),
+    MUSIC_DETECTOR("Song & Music Detector", "2–4s acoustic fingerprint, noise gate, vocal lyrics & BPM/Key", "studio_tool_music_detector"),
     VELOCITY_STUDIO("Velocity Studio", "Beat-sync smooth slow-mo & custom CapCut curves", "studio_tool_velocity"),
     IMAGE_STUDIO("Image Ratio & Studio", "Any aspect ratio, collage grid, film filters & EXIF", "studio_tool_image_studio"),
     TRIMMER("Precision Trimmer", "Filmstrip frame-accurate clip cutter", "studio_tool_trimmer"),

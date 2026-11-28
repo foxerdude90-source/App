@@ -63,6 +63,7 @@ import com.example.ui.features.fetch.FetchViewModel
 import com.example.ui.features.image.ImageStudioViewModel
 import com.example.ui.features.maps.MapsScreen
 import com.example.ui.features.maps.MapsViewModel
+import com.example.ui.features.music.MusicDetectorViewModel
 import com.example.ui.features.studio.StudioScreen
 import com.example.ui.features.studio.StudioToolId
 import com.example.ui.features.studio.StudioViewModel
@@ -140,6 +141,7 @@ fun ClipperApp(
     velocityViewModel: VelocityViewModel = viewModel(),
     imageStudioViewModel: ImageStudioViewModel = viewModel(),
     mapsViewModel: MapsViewModel = viewModel(),
+    musicDetectorViewModel: MusicDetectorViewModel = viewModel(),
 ) {
     var activeTab by rememberSaveable { mutableStateOf(ClipperTab.FETCH) }
     val studioState by studioViewModel.uiState.collectAsStateWithLifecycle()
@@ -221,6 +223,12 @@ fun ClipperApp(
                         captionsViewModel = captionsViewModel,
                         velocityViewModel = velocityViewModel,
                         imageStudioViewModel = imageStudioViewModel,
+                        musicDetectorViewModel = musicDetectorViewModel,
+                        onOpenSongLabWithUrl = { url ->
+                            activeTab = ClipperTab.STUDIO
+                            studioViewModel.openTool(StudioToolId.MUSIC_DETECTOR)
+                            musicDetectorViewModel.preloadSocialUrlAndScan(url)
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -286,6 +294,12 @@ fun ClipperApp(
                     captionsViewModel = captionsViewModel,
                     velocityViewModel = velocityViewModel,
                     imageStudioViewModel = imageStudioViewModel,
+                    musicDetectorViewModel = musicDetectorViewModel,
+                    onOpenSongLabWithUrl = { url ->
+                        activeTab = ClipperTab.STUDIO
+                        studioViewModel.openTool(StudioToolId.MUSIC_DETECTOR)
+                        musicDetectorViewModel.preloadSocialUrlAndScan(url)
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding),
@@ -307,6 +321,8 @@ private fun ClipperTabContent(
     captionsViewModel: CaptionsViewModel,
     velocityViewModel: VelocityViewModel,
     imageStudioViewModel: ImageStudioViewModel,
+    musicDetectorViewModel: MusicDetectorViewModel,
+    onOpenSongLabWithUrl: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     AnimatedContent(
@@ -319,7 +335,11 @@ private fun ClipperTabContent(
         modifier = modifier,
     ) { tab ->
         when (tab) {
-            ClipperTab.FETCH -> FetchScreen(viewModel = fetchViewModel, modifier = Modifier.fillMaxSize())
+            ClipperTab.FETCH -> FetchScreen(
+                viewModel = fetchViewModel,
+                onOpenInSongDetector = onOpenSongLabWithUrl,
+                modifier = Modifier.fillMaxSize(),
+            )
             ClipperTab.UPSCALE -> UpscaleScreen(viewModel = upscaleViewModel, modifier = Modifier.fillMaxSize())
             ClipperTab.CUTOUT -> CutoutScreen(viewModel = cutoutViewModel, modifier = Modifier.fillMaxSize())
             ClipperTab.VOICE -> VoiceScreen(viewModel = voiceViewModel, modifier = Modifier.fillMaxSize())
@@ -329,6 +349,7 @@ private fun ClipperTabContent(
                 captionsViewModel = captionsViewModel,
                 velocityViewModel = velocityViewModel,
                 imageStudioViewModel = imageStudioViewModel,
+                musicDetectorViewModel = musicDetectorViewModel,
                 modifier = Modifier.fillMaxSize(),
             )
         }

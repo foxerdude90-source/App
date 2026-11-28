@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Album
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -44,11 +45,17 @@ import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Cookie
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.Fingerprint
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.HighQuality
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Login
+import androidx.compose.material.icons.outlined.Lyrics
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.MusicOff
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.QueueMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.VideoLibrary
@@ -108,6 +115,14 @@ import com.example.ui.theme.JetBrainsMono
 import com.example.ui.theme.StudioBorder
 import com.example.ui.theme.StudioSnow
 import com.example.ui.theme.StudioWhite
+import com.example.core.media.FetchedMediaMetadata
+import com.example.core.music.IdentifiedSong
+import com.example.core.music.MusicalTelemetry
+import com.example.ui.theme.ClipperAmber
+import com.example.ui.theme.ClipperAmberSoft
+import com.example.ui.theme.ClipperMagenta
+import com.example.ui.theme.ClipperMagentaSoft
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -115,6 +130,7 @@ import kotlin.math.roundToInt
 fun FetchScreen(
     viewModel: FetchViewModel,
     modifier: Modifier = Modifier,
+    onOpenInSongDetector: ((String) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
@@ -533,6 +549,26 @@ fun FetchScreen(
                                 )
                             }
                         }
+
+                        HorizontalDivider(color = StudioBorder)
+
+                        // Inline Audio File & Song/Music Detector Panel (side feature)
+                        InlineAudioAndSongInspectorPanel(
+                            meta = meta,
+                            isDetectingSong = state.isDetectingSong,
+                            detectionStatus = state.songDetectionStatus,
+                            detectedSong = state.detectedSong,
+                            telemetry = state.detectedSongTelemetry,
+                            notice = state.songDetectionNotice,
+                            isPlayingPreview = state.isPlayingInlineSongPreview,
+                            showLyrics = state.showInlineLyrics,
+                            isDownloading = state.isDownloading,
+                            onDeepScanSong = viewModel::runDeepSongScanForFetchedMedia,
+                            onDownloadAudioOnly = viewModel::selectBestAudioAndDownload,
+                            onTogglePreview = viewModel::toggleInlineSongPreview,
+                            onToggleLyrics = viewModel::toggleInlineLyrics,
+                            onOpenInSongLab = onOpenInSongDetector?.let { cb -> { cb(meta.sourceUrl) } },
+                        )
 
                         HorizontalDivider(color = StudioBorder)
 
@@ -1023,3 +1059,345 @@ private fun QualityOptionRow(
         }
     }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun InlineAudioAndSongInspectorPanel(
+    meta: FetchedMediaMetadata,
+    isDetectingSong: Boolean,
+    detectionStatus: String,
+    detectedSong: IdentifiedSong?,
+    telemetry: MusicalTelemetry?,
+    notice: String?,
+    isPlayingPreview: Boolean,
+    showLyrics: Boolean,
+    isDownloading: Boolean,
+    onDeepScanSong: () -> Unit,
+    onDownloadAudioOnly: () -> Unit,
+    onTogglePreview: () -> Unit,
+    onToggleLyrics: () -> Unit,
+    onOpenInSongLab: (() -> Unit)?,
+) {
+    Surface(
+        color = StudioSnow,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            1.dp,
+            if (!meta.hasAudioTrack) ClipperRose.copy(alpha = 0.35f) else ClipperIndigo.copy(alpha = 0.22f),
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("fetch_audio_song_card"),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = if (meta.hasAudioTrack) Icons.Outlined.GraphicEq else Icons.Outlined.MusicOff,
+                        contentDescription = null,
+                        tint = if (meta.hasAudioTrack) ClipperIndigo else ClipperRose,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        text = "Audio File & Song Detector",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = InkObsidian,
+                    )
+                }
+
+                if (onOpenInSongLab != null && meta.hasAudioTrack) {
+                    Surface(
+                        color = ClipperMagentaSoft,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .testTag("fetch_open_song_lab_button")
+                            .clickable(onClick = onOpenInSongLab),
+                    ) {
+                        Text(
+                            text = "Song Lab",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = ClipperMagenta,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            }
+
+            // 1. Actual Embedded Audio File Status
+            if (!meta.hasAudioTrack) {
+                Surface(
+                    color = ClipperRoseSoft,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(0.75.dp, ClipperRose.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("fetch_no_audio_badge"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Outlined.MusicOff, contentDescription = null, tint = ClipperRose, modifier = Modifier.size(18.dp))
+                        Column {
+                            Text(
+                                text = "No audio file detected",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = ClipperRose,
+                            )
+                            Text(
+                                text = "This video/short contains video-only streams without an audio track.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = InkSlate,
+                            )
+                        }
+                    }
+                }
+            } else {
+                val primaryAudio = meta.detectedAudioStreams.firstOrNull()
+                Surface(
+                    color = StudioWhite,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, StudioBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("fetch_detected_audio_file_row"),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(ClipperEmeraldSoft),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Outlined.AudioFile, contentDescription = null, tint = ClipperEmerald, modifier = Modifier.size(18.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (primaryAudio != null) {
+                                        "Audio Track: ${primaryAudio.codec.ifBlank { "AUDIO" }} (${primaryAudio.containerExt.uppercase(Locale.US)})"
+                                    } else {
+                                        "Audio Track Present"
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = InkObsidian,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = primaryAudio?.let { aud ->
+                                        val sz = if (aud.fileSizeBytes > 0L) " • ${MediaStoreSaver.formatByteSize(aud.fileSizeBytes)}" else ""
+                                        "${aud.summaryLine()}$sz"
+                                    } ?: "Ready for audio extraction",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                    color = ClipperEmerald,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+
+                        if (!isDownloading) {
+                            OutlinedButton(
+                                onClick = onDownloadAudioOnly,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, ClipperEmerald.copy(alpha = 0.4f)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("fetch_extract_audio_quick_button"),
+                            ) {
+                                Text("Save Audio", style = MaterialTheme.typography.labelSmall, color = ClipperEmerald)
+                            }
+                        }
+                    }
+                }
+
+                // 2. Active Song Recognition Spinner
+                if (isDetectingSong) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(15.dp),
+                            strokeWidth = 2.dp,
+                            color = ClipperIndigo,
+                        )
+                        Text(
+                            text = detectionStatus.ifBlank { "Identifying song & vocals..." },
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                            color = ClipperIndigo,
+                        )
+                    }
+                }
+
+                // 3. Identified Song Result Card
+                detectedSong?.let { song ->
+                    Surface(
+                        color = StudioWhite,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, ClipperIndigo.copy(alpha = 0.28f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("fetch_detected_song_result"),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(ClipperIndigoSoft),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    if (!song.artworkUrl.isNullOrBlank()) {
+                                        AsyncImage(
+                                            model = song.artworkUrl,
+                                            contentDescription = song.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    } else {
+                                        Icon(Icons.Outlined.Album, contentDescription = null, tint = ClipperIndigo, modifier = Modifier.size(26.dp))
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = "${song.matchSource.badgeLabel} • ${song.confidencePercent}%",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMono),
+                                        color = ClipperEmerald,
+                                    )
+                                    Text(
+                                        text = song.title,
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = InkObsidian,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = listOfNotNull(song.artist, song.album).joinToString(" • "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = ClipperIndigo,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (!song.previewAudioUrl.isNullOrBlank()) {
+                                    Surface(
+                                        color = if (isPlayingPreview) ClipperRose else ClipperIndigo,
+                                        shape = RoundedCornerShape(10.dp),
+                                    ) {
+                                        IconButton(
+                                            onClick = onTogglePreview,
+                                            modifier = Modifier.size(38.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isPlayingPreview) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                                                contentDescription = if (isPlayingPreview) "Pause preview" else "Play 30s preview",
+                                                tint = StudioWhite,
+                                                modifier = Modifier.size(20.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            val activeTelemetry = telemetry ?: song.telemetry
+                            if (activeTelemetry != null) {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    if (activeTelemetry.bpm > 0f) {
+                                        TelemetryChip("BPM", String.format(Locale.US, "%.0f", activeTelemetry.bpm), ClipperCyan, ClipperCyanSoft)
+                                    }
+                                    TelemetryChip("Key", "${activeTelemetry.musicalKey} (${activeTelemetry.camelotCode})", ClipperMagenta, ClipperMagentaSoft)
+                                }
+                            }
+
+                            if (song.syncedLyrics.isNotEmpty() || !song.plainLyrics.isNullOrBlank()) {
+                                OutlinedButton(
+                                    onClick = onToggleLyrics,
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, StudioBorder),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                ) {
+                                    Icon(Icons.Outlined.Lyrics, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(if (showLyrics) "Hide Lyrics" else "View Synced Lyrics", style = MaterialTheme.typography.labelSmall)
+                                }
+                                if (showLyrics) {
+                                    val previewLines = if (song.syncedLyrics.isNotEmpty()) {
+                                        song.syncedLyrics.take(8).joinToString("\n") { it.text }
+                                    } else {
+                                        song.plainLyrics.orEmpty().lines().take(8).joinToString("\n")
+                                    }
+                                    Text(
+                                        text = previewLines,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = InkSlate,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 4. Notice & Deep 2–4s Acoustic DSP Scan Button
+                if (!notice.isNullOrBlank() && detectedSong == null) {
+                    Text(
+                        text = notice,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = InkSlate,
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onDeepScanSong,
+                    enabled = !isDetectingSong && !isDownloading,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, ClipperIndigo.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("fetch_deep_song_scan_button"),
+                ) {
+                    Icon(Icons.Outlined.Fingerprint, contentDescription = null, tint = ClipperIndigo, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (detectedSong != null) "Re-Scan Audio Waveform (2–4s DSP)" else "Deep Song Scan (2–4s Audio & Vocal DSP)",
+                        color = ClipperIndigo,
+                    )
+                }
+            }
+        }
+    }
+}
+

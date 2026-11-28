@@ -8,6 +8,7 @@ import android.speech.tts.TextToSpeech
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.core.maps.DwellSessionTracker
 import com.example.core.maps.DeviceLocationSensorTracker
 import com.example.core.maps.GeoPoint
 import com.example.core.maps.LiveGpsTelemetry
@@ -22,9 +23,15 @@ import com.example.core.maps.Osm3dSceneEngine
 import com.example.core.maps.PlaceResult
 import com.example.core.maps.PoiCategory
 import com.example.core.maps.SavedPlaceBookmark
+import com.example.core.maps.SavedRouteCategory
+import com.example.core.maps.SmartPlaceHistoryCodec
+import com.example.core.maps.SmartSavedPlace
 import com.example.core.maps.TravelProfile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -103,12 +110,26 @@ data class MapsUiState(
     val tripBreadcrumb: List<GeoPoint> = emptyList(),
     val tripDistanceMeters: Double = 0.0,
     val tripMaxSpeedMps: Float = 0f,
-    // Weather & Bookmarks & Overlays
+    // Weather & Bookmarks & Smart Auto-Saved Inbox
     val weather: LocalWeatherSnapshot? = null,
     val savedBookmarks: List<SavedPlaceBookmark> = emptyList(),
+    val smartPlaces: List<SmartSavedPlace> = emptyList(),
+    val homePlace: SmartSavedPlace? = null,
+    val workPlace: SmartSavedPlace? = null,
     val showLayersSheet: Boolean = false,
     val showBookmarksSheet: Boolean = false,
     val showTelemetryDetailSheet: Boolean = false,
+    val showLeftSidebar: Boolean = false,
+    val showMoreCategories: Boolean = false,
+    val showSearchOverlay: Boolean = false,
+    val showPoiResultsSheet: Boolean = false,
+    val poiFilterOpenNow: Boolean = false,
+    val poiFilterHasPhone: Boolean = false,
+    val poiFilterHasWebsite: Boolean = false,
+    val poiFilterWheelchair: Boolean = false,
+    val poiSortByName: Boolean = false,
+    val showSearchThisAreaPill: Boolean = false,
+    val doubleTapToSaveEnabled: Boolean = false,
     val statusBanner: String? = null,
     // One-shot camera command channel
     val cameraCommandSeq: Long = 0L,
@@ -116,6 +137,11 @@ data class MapsUiState(
 ) {
     val activeRoute: NavigationRoute?
         get() = routes.getOrNull(activeRouteIndex)
+
+    val savedInboxCount: Int
+        get() = smartPlaces.count { it.listType != SavedRouteCategory.RECENT } +
+            (if (homePlace != null) 1 else 0) +
+            (if (workPlace != null) 1 else 0)
 
     val effectiveHeadingDeg: Float
         get() {
@@ -146,10 +172,15 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val api = MapsApiClient()
     private val prefs = application.getSharedPreferences("clipper_maps_prefs", Context.MODE_PRIVATE)
+    private val dwellTracker = DwellSessionTracker()
     private val _uiState = MutableStateFlow(
         MapsUiState(
             hasLocationPermission = checkLocationPermission(application),
             savedBookmarks = loadSavedBookmarks(),
+            smartPlaces = SmartPlaceHistoryCodec.loadSmartPlaces(prefs),
+            homePlace = SmartPlaceHistoryCodec.loadHomePlace(prefs),
+            workPlace = SmartPlaceHistoryCodec.loadWorkPlace(prefs),
+            doubleTapToSaveEnabled = prefs.getBoolean("double_tap_save_enabled", false),
         ),
     )
     val uiState: StateFlow<MapsUiState> = _uiState.asStateFlow()
@@ -159,10 +190,13 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
     private var searchJob: Job? = null
     private var routeJob: Job? = null
     private var poiJob: Job? = null
+    private var poiPhotoJob: Job? = null
+    private var placePhotoJob: Job? = null
     private var weatherJob: Job? = null
     private var osmSceneJob: Job? = null
     private var lastWeatherPoint: GeoPoint? = null
     private var lastOsmScenePoint: GeoPoint? = null
+    private var lastPoiSearchCenter: GeoPoint? = null
     private var lastRerouteMs: Long = 0L
     private var lastSpokenStepIndex: Int = -1
     private var snappedInitialFix: Boolean = false
@@ -225,12 +259,16 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onCameraIdle(lat: Double, lng: Double, zoom: Double, pitch: Double, bearing: Double) {
         val center = GeoPoint(lat, lng)
+        val pannedFromPoiSearch = lastPoiSearchCenter?.let { prev ->
+            _uiState.value.activePoiCategory != null && MapsGeoMath.haversineMeters(prev, center) > 450.0
+        } ?: false
         _uiState.update {
             it.copy(
                 mapCenter = center,
                 mapZoom = zoom,
                 mapPitch = pitch,
                 mapBearing = bearing,
+                showSearchThisAreaPill = if (pannedFromPoiSearch) true else it.showSearchThisAreaPill,
             )
         }
         fetchWeatherIfNeeded(center)
@@ -339,6 +377,43 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Auto-save places where user stays 1–4 hours using real GPS dwell tracking
+        val dwellTrigger = dwellTracker.onGpsSample(fix.point, fix.timestampMs)
+        if (dwellTrigger != null) {
+            viewModelScope.launch {
+                val resolved = runCatching { api.reverseGeocode(dwellTrigger.point) }.getOrElse {
+                    PlaceResult(
+                        id = "dwell_${dwellTrigger.point.lat}_${dwellTrigger.point.lng}",
+                        name = "Stayed Location",
+                        subtitle = MapsGeoMath.formatCoordinatesDms(dwellTrigger.point),
+                        point = dwellTrigger.point,
+                    )
+                }
+                val photos = runCatching {
+                    api.fetchRealPlacePhotos(resolved.name, resolved.point, resolved.category)
+                }.getOrDefault(listOf(MapsGeoMath.osmTilePreviewUrl(resolved.point, 17)))
+                val enriched = resolved.copy(photoUrls = photos)
+                _uiState.update { cur ->
+                    val updated = SmartPlaceHistoryCodec.upsertDwellAutoSavedPlace(
+                        existing = cur.smartPlaces,
+                        place = enriched,
+                        dwellMinutes = dwellTrigger.dwellMinutes,
+                        nowMs = System.currentTimeMillis(),
+                    )
+                    SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updated)
+                    val badge = SmartPlaceHistoryCodec.formatDwellBadge(dwellTrigger.dwellMinutes)
+                    cur.copy(
+                        smartPlaces = updated,
+                        statusBanner = if (!dwellTrigger.isDurationUpdate) {
+                            "Auto-saved stay: ${enriched.name} ($badge)"
+                        } else {
+                            cur.statusBanner
+                        },
+                    )
+                }
+            }
+        }
+
         if (triggerReroute) {
             prevState.selectedPlace?.let { dest ->
                 speakGuidance("Recalculating route")
@@ -410,14 +485,55 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun setShowLayersSheet(show: Boolean) = _uiState.update {
-        it.copy(showLayersSheet = show, showBookmarksSheet = false, showTelemetryDetailSheet = false)
+        it.copy(showLayersSheet = show, showBookmarksSheet = false, showTelemetryDetailSheet = false, showLeftSidebar = false)
     }
     fun setShowBookmarksSheet(show: Boolean) = _uiState.update {
-        it.copy(showBookmarksSheet = show, showLayersSheet = false, showTelemetryDetailSheet = false)
+        it.copy(showBookmarksSheet = show, showLayersSheet = false, showTelemetryDetailSheet = false, showLeftSidebar = false)
     }
     fun setShowTelemetryDetailSheet(show: Boolean) = _uiState.update {
-        it.copy(showTelemetryDetailSheet = show, showLayersSheet = false, showBookmarksSheet = false)
+        it.copy(showTelemetryDetailSheet = show, showLayersSheet = false, showBookmarksSheet = false, showLeftSidebar = false)
     }
+    fun setShowLeftSidebar(show: Boolean) = _uiState.update {
+        it.copy(
+            showLeftSidebar = show,
+            showMoreCategories = if (show) false else it.showMoreCategories,
+            showSearchOverlay = if (show) false else it.showSearchOverlay,
+            showLayersSheet = if (show) false else it.showLayersSheet,
+            showBookmarksSheet = if (show) false else it.showBookmarksSheet,
+        )
+    }
+    fun setShowMoreCategories(show: Boolean) = _uiState.update {
+        it.copy(
+            showMoreCategories = show,
+            showLeftSidebar = if (show) false else it.showLeftSidebar,
+            showSearchOverlay = if (show) false else it.showSearchOverlay,
+        )
+    }
+    fun setShowSearchOverlay(show: Boolean) = _uiState.update {
+        it.copy(
+            showSearchOverlay = show,
+            showLeftSidebar = if (show) false else it.showLeftSidebar,
+            showMoreCategories = if (show) false else it.showMoreCategories,
+        )
+    }
+    fun setShowPoiResultsSheet(show: Boolean) = _uiState.update {
+        it.copy(showPoiResultsSheet = show)
+    }
+    fun toggleDoubleTapToSave() {
+        _uiState.update { cur ->
+            val next = !cur.doubleTapToSaveEnabled
+            prefs.edit().putBoolean("double_tap_save_enabled", next).apply()
+            cur.copy(
+                doubleTapToSaveEnabled = next,
+                statusBanner = if (next) "Double-tap anywhere on map to Favorite!" else "Map double-tap zoom restored",
+            )
+        }
+    }
+    fun togglePoiFilterOpenNow() = _uiState.update { it.copy(poiFilterOpenNow = !it.poiFilterOpenNow) }
+    fun togglePoiFilterHasPhone() = _uiState.update { it.copy(poiFilterHasPhone = !it.poiFilterHasPhone) }
+    fun togglePoiFilterHasWebsite() = _uiState.update { it.copy(poiFilterHasWebsite = !it.poiFilterHasWebsite) }
+    fun togglePoiFilterWheelchair() = _uiState.update { it.copy(poiFilterWheelchair = !it.poiFilterWheelchair) }
+    fun togglePoiSortByName() = _uiState.update { it.copy(poiSortByName = !it.poiSortByName) }
     fun zoomIn() = dispatchCamera(MapCameraCommand.ZoomBy(1.15))
     fun zoomOut() = dispatchCamera(MapCameraCommand.ZoomBy(-1.15))
     fun resetNorth() = dispatchCamera(MapCameraCommand.ResetNorth)
@@ -472,18 +588,62 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectPlaceResult(place: PlaceResult) {
-        _uiState.update {
-            it.copy(
+        val nowMs = System.currentTimeMillis()
+        _uiState.update { cur ->
+            val updatedHistory = SmartPlaceHistoryCodec.recordPlaceInteraction(cur.smartPlaces, place, nowMs)
+            SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updatedHistory)
+            cur.copy(
                 selectedPlace = place,
+                smartPlaces = updatedHistory,
                 searchResults = emptyList(),
                 searchQuery = place.name,
                 routes = emptyList(),
                 isNavigating = false,
                 cameraMode = MapCameraMode.FREE,
                 showBookmarksSheet = false,
+                showLeftSidebar = false,
+                showMoreCategories = false,
+                showSearchOverlay = false,
+                showPoiResultsSheet = false,
             )
         }
         dispatchCamera(MapCameraCommand.FlyTo(place.point, zoom = 16.2, pitch = 52.0, bearing = 0.0))
+        enrichSelectedPlacePhotos(place)
+    }
+
+    private fun enrichSelectedPlacePhotos(place: PlaceResult) {
+        if (place.photoUrls.size >= 2) return
+        placePhotoJob?.cancel()
+        placePhotoJob = viewModelScope.launch {
+            val urls = runCatching {
+                api.fetchRealPlacePhotos(
+                    name = place.name,
+                    point = place.point,
+                    categoryHint = place.category,
+                )
+            }.getOrDefault(listOf(MapsGeoMath.osmTilePreviewUrl(place.point, 17)))
+            if (urls.isEmpty()) return@launch
+            _uiState.update { cur ->
+                val active = cur.selectedPlace
+                if (active != null && MapsGeoMath.haversineMeters(active.point, place.point) < 15.0) {
+                    val primaryPhoto = urls.firstOrNull { !it.contains("tile.openstreetmap.org") } ?: urls.first()
+                    val updatedHistory = cur.smartPlaces.map { saved ->
+                        if (MapsGeoMath.haversineMeters(saved.point, place.point) < 60.0 && saved.photoUrl.contains("tile.openstreetmap.org")) {
+                            saved.copy(photoUrl = primaryPhoto)
+                        } else {
+                            saved
+                        }
+                    }
+                    SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updatedHistory)
+                    cur.copy(
+                        selectedPlace = active.copy(photoUrls = urls),
+                        smartPlaces = updatedHistory,
+                    )
+                } else {
+                    cur
+                }
+            }
+        }
     }
 
     fun onMapTapOrLongPress(point: GeoPoint) {
@@ -498,6 +658,7 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
             name = "Loading address…",
             subtitle = MapsGeoMath.formatCoordinatesDms(point),
             point = point,
+            photoUrls = listOf(MapsGeoMath.osmTilePreviewUrl(point, 17)),
         )
         _uiState.update {
             it.copy(
@@ -505,22 +666,87 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
                 isReverseGeocoding = true,
                 searchResults = emptyList(),
                 routes = emptyList(),
+                showSearchOverlay = false,
+                showPoiResultsSheet = false,
             )
         }
         viewModelScope.launch {
             try {
                 val resolved = api.reverseGeocode(point)
-                _uiState.update {
-                    if (it.selectedPlace?.point == point) {
-                        it.copy(selectedPlace = resolved, isReverseGeocoding = false)
+                val photos = runCatching {
+                    api.fetchRealPlacePhotos(resolved.name, resolved.point, resolved.category)
+                }.getOrDefault(listOf(MapsGeoMath.osmTilePreviewUrl(point, 17)))
+                val enriched = resolved.copy(photoUrls = photos)
+                _uiState.update { cur ->
+                    if (cur.selectedPlace?.point == point) {
+                        val updatedHistory = SmartPlaceHistoryCodec.recordPlaceInteraction(cur.smartPlaces, enriched, System.currentTimeMillis())
+                        SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updatedHistory)
+                        cur.copy(selectedPlace = enriched, smartPlaces = updatedHistory, isReverseGeocoding = false)
                     } else {
-                        it.copy(isReverseGeocoding = false)
+                        cur.copy(isReverseGeocoding = false)
                     }
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: Exception) {
                 _uiState.update { it.copy(isReverseGeocoding = false) }
+            }
+        }
+    }
+
+    /**
+     * Double-tap directly on the map (when enabled) to immediately drop a 3D pin, reverse-geocode,
+     * fetch real area photos, and save to Favorites in the Left Sidebar Route Inbox!
+     */
+    fun onMapDoubleTapSave(point: GeoPoint) {
+        val immediatePin = PlaceResult(
+            id = "fav_${point.lat}_${point.lng}",
+            name = "Pinned Location",
+            subtitle = MapsGeoMath.formatCoordinatesDms(point),
+            point = point,
+            photoUrls = listOf(MapsGeoMath.osmTilePreviewUrl(point, 17)),
+        )
+        _uiState.update { cur ->
+            val (updatedSmart, _) = SmartPlaceHistoryCodec.togglePlaceInList(
+                existing = cur.smartPlaces.filterNot { MapsGeoMath.haversineMeters(it.point, point) < 65.0 && it.listType == SavedRouteCategory.FAVORITE },
+                place = immediatePin,
+                targetList = SavedRouteCategory.FAVORITE,
+                nowMs = System.currentTimeMillis(),
+            )
+            SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updatedSmart)
+            cur.copy(
+                selectedPlace = immediatePin,
+                smartPlaces = updatedSmart,
+                isReverseGeocoding = true,
+                statusBanner = "★ Double-tap saved to Favorites!",
+            )
+        }
+        viewModelScope.launch {
+            val resolved = runCatching { api.reverseGeocode(point) }.getOrDefault(immediatePin)
+            val photos = runCatching {
+                api.fetchRealPlacePhotos(resolved.name, resolved.point, resolved.category)
+            }.getOrDefault(listOf(MapsGeoMath.osmTilePreviewUrl(point, 17)))
+            val enriched = resolved.copy(photoUrls = photos)
+            _uiState.update { cur ->
+                val updated = cur.smartPlaces.map { saved ->
+                    if (MapsGeoMath.haversineMeters(saved.point, point) < 65.0) {
+                        saved.copy(
+                            name = enriched.name,
+                            subtitle = enriched.subtitle,
+                            listType = SavedRouteCategory.FAVORITE,
+                            photoUrl = photos.firstOrNull { !it.contains("tile.openstreetmap.org") } ?: photos.first(),
+                        )
+                    } else {
+                        saved
+                    }
+                }
+                SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updated)
+                cur.copy(
+                    selectedPlace = if (cur.selectedPlace?.point == point) enriched else cur.selectedPlace,
+                    smartPlaces = updated,
+                    isReverseGeocoding = false,
+                    statusBanner = "★ Saved \"${enriched.name}\" to Favorites!",
+                )
             }
         }
     }
@@ -663,26 +889,47 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Nearby POIs (Overpass OpenStreetMap) ---
+    // --- Nearby POIs (Overpass OpenStreetMap + Auto-Fetched Wikimedia/OSM Photos) ---
 
-    fun togglePoiCategory(category: PoiCategory) {
-        if (_uiState.value.activePoiCategory == category) {
-            poiJob?.cancel()
-            _uiState.update { it.copy(activePoiCategory = null, nearbyPois = emptyList(), isLoadingPois = false) }
+    fun togglePoiCategory(category: PoiCategory, useMapCenter: Boolean = false) {
+        if (!useMapCenter && _uiState.value.activePoiCategory == category) {
+            clearActivePoiCategory()
             return
         }
-        val center = _uiState.value.liveLocation?.point ?: _uiState.value.mapCenter
+        val center = if (useMapCenter) {
+            _uiState.value.mapCenter
+        } else {
+            _uiState.value.liveLocation?.point ?: _uiState.value.mapCenter
+        }
+        lastPoiSearchCenter = center
         poiJob?.cancel()
+        poiPhotoJob?.cancel()
         poiJob = viewModelScope.launch {
-            _uiState.update { it.copy(activePoiCategory = category, isLoadingPois = true, statusBanner = null) }
+            _uiState.update {
+                it.copy(
+                    activePoiCategory = category,
+                    isLoadingPois = true,
+                    showMoreCategories = false,
+                    showSearchOverlay = false,
+                    showLeftSidebar = false,
+                    showPoiResultsSheet = true,
+                    showSearchThisAreaPill = false,
+                    selectedPlace = null,
+                    routes = emptyList(),
+                    statusBanner = null,
+                )
+            }
             try {
-                val pois = api.fetchNearbyPois(center, category)
+                val pois = api.fetchNearbyPois(center, category, radiusMeters = 3800)
                 _uiState.update {
                     it.copy(
                         isLoadingPois = false,
                         nearbyPois = pois,
-                        statusBanner = if (pois.isEmpty()) "No ${category.label} found within 3.5 km" else "Found ${pois.size} nearby ${category.label}",
+                        statusBanner = if (pois.isEmpty()) "No ${category.label} found within 3.8 km — pan & tap Search this area" else "Found ${pois.size} ${category.label} nearby",
                     )
+                }
+                if (pois.isNotEmpty()) {
+                    enrichPoiPhotosAsync(pois, category)
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -692,16 +939,94 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun onPoiClicked(poiId: String) {
-        val poi = _uiState.value.nearbyPois.firstOrNull { it.id == poiId } ?: return
-        val place = PlaceResult(
+    fun searchActiveCategoryInCurrentArea() {
+        val active = _uiState.value.activePoiCategory ?: return
+        togglePoiCategory(active, useMapCenter = true)
+    }
+
+    fun clearActivePoiCategory() {
+        poiJob?.cancel()
+        poiPhotoJob?.cancel()
+        lastPoiSearchCenter = null
+        _uiState.update {
+            it.copy(
+                activePoiCategory = null,
+                nearbyPois = emptyList(),
+                isLoadingPois = false,
+                showPoiResultsSheet = false,
+                showSearchThisAreaPill = false,
+            )
+        }
+    }
+
+    private fun enrichPoiPhotosAsync(pois: List<NearbyPoi>, category: PoiCategory) {
+        poiPhotoJob?.cancel()
+        poiPhotoJob = viewModelScope.launch {
+            // Fetch authentic Wikimedia Commons / Wikipedia / OSM photos in small polite parallel batches
+            pois.take(12).chunked(3).forEach { batch ->
+                val fetchedPairs = coroutineScope {
+                    batch.map { poi ->
+                        async {
+                            val photos = runCatching {
+                                api.fetchRealPlacePhotos(
+                                    name = poi.name,
+                                    point = poi.point,
+                                    categoryHint = category.label,
+                                    wikipediaTag = poi.wikipediaTag,
+                                    commonsTag = poi.wikimediaCommonsTag,
+                                    directImageUrl = poi.directImageUrl,
+                                )
+                            }.getOrDefault(listOf(MapsGeoMath.osmTilePreviewUrl(poi.point, 17)))
+                            poi.id to photos
+                        }
+                    }.awaitAll()
+                }.toMap()
+
+                _uiState.update { cur ->
+                    if (cur.activePoiCategory != category) cur
+                    else cur.copy(
+                        nearbyPois = cur.nearbyPois.map { existing ->
+                            fetchedPairs[existing.id]?.let { urls -> existing.copy(photoUrls = urls) } ?: existing
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    fun poiToPlaceResult(poi: NearbyPoi): PlaceResult {
+        val subtitleParts = buildList {
+            add(poi.category.label)
+            if (poi.cuisine.isNotBlank()) add(poi.cuisine.replace(';', ',').replace('_', ' '))
+            if (poi.address.isNotBlank()) add(poi.address)
+            add("${MapsGeoMath.formatDistance(poi.distanceMeters, _uiState.value.useImperialUnits)} away")
+        }
+        return PlaceResult(
             id = poi.id,
             name = poi.name,
-            subtitle = "${poi.category.label} • ${MapsGeoMath.formatDistance(poi.distanceMeters, _uiState.value.useImperialUnits)} away",
+            subtitle = subtitleParts.joinToString(" • "),
             point = poi.point,
             category = poi.category.label,
+            phone = poi.phone,
+            website = poi.website,
+            openingHours = poi.openingHours,
+            photoUrls = poi.photoUrls.ifEmpty { listOf(MapsGeoMath.osmTilePreviewUrl(poi.point, 17)) },
         )
+    }
+
+    fun onPoiClicked(poiId: String) {
+        val poi = _uiState.value.nearbyPois.firstOrNull { it.id == poiId } ?: return
+        selectPlaceResult(poiToPlaceResult(poi))
+    }
+
+    fun selectNearbyPoi(poi: NearbyPoi) {
+        selectPlaceResult(poiToPlaceResult(poi))
+    }
+
+    fun routeToNearbyPoi(poi: NearbyPoi, autoStartNav: Boolean = false) {
+        val place = poiToPlaceResult(poi)
         selectPlaceResult(place)
+        calculateRouteTo(place, autoStartNav = autoStartNav)
     }
 
     // --- Microscopic Measurement Tool ---
@@ -753,9 +1078,125 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Saved Bookmarks (Local SharedPreferences persistence) ---
+    // --- Smart Saved Routes Inbox (Favorites, Want to Go, Home, Work, Auto-Dwell, Frequent) ---
+
+    fun toggleFavoritePlace(place: PlaceResult) {
+        _uiState.update { state ->
+            val (updatedSmart, added) = SmartPlaceHistoryCodec.togglePlaceInList(
+                existing = state.smartPlaces,
+                place = place,
+                targetList = SavedRouteCategory.FAVORITE,
+                nowMs = System.currentTimeMillis(),
+            )
+            SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updatedSmart)
+            state.copy(
+                smartPlaces = updatedSmart,
+                statusBanner = if (added) "★ Saved \"${place.name}\" to Favorites" else "Removed \"${place.name}\" from Favorites",
+            )
+        }
+    }
+
+    fun toggleWantToGoPlace(place: PlaceResult) {
+        _uiState.update { state ->
+            val (updatedSmart, added) = SmartPlaceHistoryCodec.togglePlaceInList(
+                existing = state.smartPlaces,
+                place = place,
+                targetList = SavedRouteCategory.WANT_TO_GO,
+                nowMs = System.currentTimeMillis(),
+            )
+            SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updatedSmart)
+            state.copy(
+                smartPlaces = updatedSmart,
+                statusBanner = if (added) "Added \"${place.name}\" to Want to go" else "Removed from Want to go",
+            )
+        }
+    }
+
+    fun setHomePlace(place: PlaceResult) {
+        val saved = SmartSavedPlace(
+            id = "home_pin",
+            name = place.name.ifBlank { "Home" },
+            subtitle = place.subtitle,
+            point = place.point,
+            categoryTag = "Home",
+            listType = SavedRouteCategory.HOME,
+            visitCount = 1,
+            lastVisitedMs = System.currentTimeMillis(),
+            photoUrl = place.photoUrls.firstOrNull().orEmpty().ifBlank { MapsGeoMath.osmTilePreviewUrl(place.point, 17) },
+        )
+        SmartPlaceHistoryCodec.saveHomePlace(prefs, saved)
+        _uiState.update { it.copy(homePlace = saved, statusBanner = "Home location set to ${saved.name}") }
+    }
+
+    fun setWorkPlace(place: PlaceResult) {
+        val saved = SmartSavedPlace(
+            id = "work_pin",
+            name = place.name.ifBlank { "Work" },
+            subtitle = place.subtitle,
+            point = place.point,
+            categoryTag = "Work",
+            listType = SavedRouteCategory.WORK,
+            visitCount = 1,
+            lastVisitedMs = System.currentTimeMillis(),
+            photoUrl = place.photoUrls.firstOrNull().orEmpty().ifBlank { MapsGeoMath.osmTilePreviewUrl(place.point, 17) },
+        )
+        SmartPlaceHistoryCodec.saveWorkPlace(prefs, saved)
+        _uiState.update { it.copy(workPlace = saved, statusBanner = "Work location set to ${saved.name}") }
+    }
+
+    fun setHomeFromCurrentLocation() {
+        val pt = _uiState.value.selectedPlace?.point ?: _uiState.value.liveLocation?.point ?: _uiState.value.mapCenter
+        viewModelScope.launch {
+            val resolved = _uiState.value.selectedPlace ?: runCatching { api.reverseGeocode(pt) }.getOrElse {
+                PlaceResult("home", "Home", MapsGeoMath.formatCoordinatesDms(pt), pt)
+            }
+            setHomePlace(resolved)
+        }
+    }
+
+    fun setWorkFromCurrentLocation() {
+        val pt = _uiState.value.selectedPlace?.point ?: _uiState.value.liveLocation?.point ?: _uiState.value.mapCenter
+        viewModelScope.launch {
+            val resolved = _uiState.value.selectedPlace ?: runCatching { api.reverseGeocode(pt) }.getOrElse {
+                PlaceResult("work", "Work", MapsGeoMath.formatCoordinatesDms(pt), pt)
+            }
+            setWorkPlace(resolved)
+        }
+    }
+
+    fun clearHomePlace() {
+        SmartPlaceHistoryCodec.saveHomePlace(prefs, null)
+        _uiState.update { it.copy(homePlace = null, statusBanner = "Home location cleared") }
+    }
+
+    fun clearWorkPlace() {
+        SmartPlaceHistoryCodec.saveWorkPlace(prefs, null)
+        _uiState.update { it.copy(workPlace = null, statusBanner = "Work location cleared") }
+    }
+
+    fun routeToSmartPlace(saved: SmartSavedPlace) {
+        val place = PlaceResult(
+            id = saved.id,
+            name = saved.name,
+            subtitle = saved.subtitle,
+            point = saved.point,
+            category = saved.categoryTag,
+            photoUrls = listOfNotNull(saved.photoUrl.takeIf { it.isNotBlank() }),
+        )
+        selectPlaceResult(place)
+        calculateRouteTo(place, autoStartNav = false)
+    }
+
+    fun deleteSmartPlace(id: String) {
+        _uiState.update { state ->
+            val updated = state.smartPlaces.filterNot { it.id == id }
+            SmartPlaceHistoryCodec.saveSmartPlaces(prefs, updated)
+            state.copy(smartPlaces = updated)
+        }
+    }
 
     fun toggleSaveBookmark(place: PlaceResult) {
+        toggleFavoritePlace(place)
         _uiState.update { state ->
             val existing = state.savedBookmarks.firstOrNull {
                 MapsGeoMath.haversineMeters(it.point, place.point) < 25.0
@@ -774,10 +1215,7 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
                 ) + state.savedBookmarks
             }
             persistSavedBookmarks(updated)
-            state.copy(
-                savedBookmarks = updated,
-                statusBanner = if (existing != null) "Removed from Saved Places" else "Saved \"${place.name}\"",
-            )
+            state.copy(savedBookmarks = updated)
         }
     }
 

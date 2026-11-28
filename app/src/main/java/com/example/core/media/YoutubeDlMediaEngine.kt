@@ -13,6 +13,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import com.example.core.music.DetectedAudioFileInfo
 import java.io.File
 import java.util.Locale
 
@@ -47,6 +48,12 @@ data class FetchedMediaMetadata(
     val width: Int,
     val height: Int,
     val qualities: List<MediaQualityOption>,
+    val hasAudioTrack: Boolean = true,
+    val detectedAudioStreams: List<DetectedAudioFileInfo> = emptyList(),
+    val embeddedTrack: String? = null,
+    val embeddedArtist: String? = null,
+    val embeddedAlbum: String? = null,
+    val description: String? = null,
 )
 
 data class DownloadProgressUpdate(
@@ -206,6 +213,12 @@ object YoutubeDlMediaEngine {
         val rawFormats: List<VideoFormat> = info.formats.orEmpty()
         val parsedFormats = rawFormats.mapNotNull { fmt ->
             val formatId = fmt.formatId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val abrVal = readNumericMember(fmt, "getAbr", "abr")?.toInt()?.coerceAtLeast(0)
+                ?: readNumericMember(fmt, "getTbr", "tbr")?.toInt()?.coerceAtLeast(0)
+                ?: 0
+            val asrVal = readNumericMember(fmt, "getAsr", "asr")?.toInt()?.coerceAtLeast(0) ?: 0
+            val chVal = readNumericMember(fmt, "getAudioChannels", "audioChannels")?.toInt()?.coerceAtLeast(0) ?: 0
+            val directUrl = fmt.url?.takeIf { it.startsWith("http") }
             RawStreamDescriptor(
                 formatId = formatId,
                 ext = fmt.ext?.lowercase(Locale.US)?.ifBlank { "mp4" } ?: "mp4",
@@ -220,11 +233,28 @@ object YoutubeDlMediaEngine {
                     else -> -1L
                 },
                 formatNote = fmt.formatNote.orEmpty(),
+                bitrateKbps = abrVal,
+                sampleRateHz = asrVal,
+                channels = chVal,
+                directUrl = directUrl,
             )
         }
 
+        val (hasAudio, audioFiles) = detectAudioFilesFromStreams(
+            formats = parsedFormats,
+            fallbackAcodec = readStringMember(info, "getAcodec", "acodec"),
+            fallbackExt = info.ext,
+            fallbackUrl = info.url,
+        )
         val qualityOptions = buildQualityOptions(parsedFormats, hasFfmpeg = ffmpegReady)
         val safeTitle = info.title?.trim()?.takeIf { it.isNotBlank() } ?: "Media Clip"
+
+        val embeddedTrack = readStringMember(info, "getTrack", "track")
+            ?: readStringMember(info, "getAltTitle", "altTitle")
+        val embeddedArtist = readStringMember(info, "getArtist", "artist")
+            ?: readStringMember(info, "getCreator", "creator")
+        val embeddedAlbum = readStringMember(info, "getAlbum", "album")
+        val description = info.description?.trim()?.takeIf { it.isNotBlank() }?.take(2400)
 
         FetchedMediaMetadata(
             sourceUrl = sanitizedUrl,
@@ -237,7 +267,96 @@ object YoutubeDlMediaEngine {
             width = info.width,
             height = info.height,
             qualities = qualityOptions,
+            hasAudioTrack = hasAudio,
+            detectedAudioStreams = audioFiles,
+            embeddedTrack = embeddedTrack,
+            embeddedArtist = embeddedArtist,
+            embeddedAlbum = embeddedAlbum,
+            description = description,
         )
+    }
+
+    /**
+     * Downloads a compact audio clip (e.g., first 14–18 seconds of best/smallest audio stream)
+     * into a temporary cache file for real on-device PCM DSP & acoustic song recognition.
+     * Caller is responsible for deleting the returned file when finished.
+     */
+    suspend fun extractAudioSampleFile(
+        context: Context,
+        originalUrl: String,
+        processId: String,
+        maxDurationSec: Int = 18,
+    ): File = withContext(Dispatchers.IO) {
+        val sanitizedUrl = sanitizeMediaUrl(originalUrl)
+        ensureInitialized(context)
+
+        val jobDir = File(context.cacheDir, "clipper_aud_scan_${System.currentTimeMillis()}").apply {
+            mkdirs()
+        }
+        val outputTemplate = File(jobDir, "sample.%(ext)s").absolutePath
+        val request = YoutubeDLRequest(sanitizedUrl).apply {
+            addOption("--no-playlist")
+            addOption("--no-warnings")
+            addOption("--socket-timeout", "20")
+            addOption("-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best[ext=mp4]/best")
+            if (ffmpegReady) {
+                addOption("--download-sections", "*0-$maxDurationSec")
+                addOption("-x")
+                addOption("--audio-format", "m4a")
+                addOption("--audio-quality", "5")
+            }
+            addOption("-o", outputTemplate)
+            attachCommonReliabilityAndCookieOptions(context, this)
+        }
+
+        YoutubeDL.getInstance().execute(request, processId) { _, _, _ -> }
+
+        val produced = jobDir.listFiles()
+            ?.filter { f ->
+                f.isFile && f.length() > 0L &&
+                    !f.name.endsWith(".part", true) &&
+                    !f.name.endsWith(".ytdl", true)
+            }
+            ?.maxByOrNull { it.length() }
+            ?: run {
+                jobDir.deleteRecursively()
+                error("Could not extract audio sample from this media URL.")
+            }
+
+        val standalone = File(context.cacheDir, "clipper_scan_${System.currentTimeMillis()}.${produced.extension.ifBlank { "m4a" }}")
+        produced.copyTo(standalone, overwrite = true)
+        jobDir.deleteRecursively()
+        standalone
+    }
+
+    private fun readStringMember(target: Any, getterName: String, fieldName: String): String? {
+        runCatching {
+            val m = target.javaClass.methods.firstOrNull { it.name == getterName && it.parameterCount == 0 }
+            val v = m?.invoke(target) as? String
+            if (!v.isNullOrBlank()) return v.trim()
+        }
+        runCatching {
+            val f = target.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+            f?.isAccessible = true
+            val v = f?.get(target) as? String
+            if (!v.isNullOrBlank()) return v.trim()
+        }
+        return null
+    }
+
+    private fun readNumericMember(target: Any, getterName: String, fieldName: String): Double? {
+        runCatching {
+            val m = target.javaClass.methods.firstOrNull { it.name == getterName && it.parameterCount == 0 }
+            val v = m?.invoke(target) as? Number
+            if (v != null && v.toDouble() > 0.0) return v.toDouble()
+        }
+        runCatching {
+            val f = target.javaClass.declaredFields.firstOrNull { it.name == fieldName }
+            f?.isAccessible = true
+            val v = f?.get(target) as? Number
+            if (v != null && v.toDouble() > 0.0) return v.toDouble()
+        }
+        return null
     }
 
     /**
@@ -409,7 +528,74 @@ object YoutubeDlMediaEngine {
         val fps: Int,
         val fileSizeBytes: Long,
         val formatNote: String = "",
+        val bitrateKbps: Int = 0,
+        val sampleRateHz: Int = 0,
+        val channels: Int = 0,
+        val directUrl: String? = null,
     )
+
+    /**
+     * Pure JVM-testable detector that inspects parsed yt-dlp formats to determine whether
+     * a real embedded audio file/stream exists inside the video/short, or if none is present.
+     */
+    fun detectAudioFilesFromStreams(
+        formats: List<RawStreamDescriptor>,
+        fallbackAcodec: String? = null,
+        fallbackExt: String? = null,
+        fallbackUrl: String? = null,
+    ): Pair<Boolean, List<DetectedAudioFileInfo>> {
+        val withAudio = formats.filter { fmt ->
+            val ac = fmt.acodec.trim().lowercase(Locale.US)
+            ac.isNotEmpty() && ac != "none" && ac != "null"
+        }
+
+        if (withAudio.isEmpty()) {
+            val fb = fallbackAcodec?.trim()?.lowercase(Locale.US).orEmpty()
+            if (fb.isNotEmpty() && fb != "none" && fb != "null") {
+                return true to listOf(
+                    DetectedAudioFileInfo(
+                        hasAudioTrack = true,
+                        formatId = "default",
+                        codec = fb.substringBefore('.').uppercase(Locale.US),
+                        containerExt = fallbackExt?.lowercase(Locale.US).orEmpty().ifBlank { "m4a" },
+                        isAudioOnlyStream = false,
+                        note = "Muxed audio stream",
+                        directStreamUrl = fallbackUrl?.takeIf { it.startsWith("http") },
+                    ),
+                )
+            }
+            return false to emptyList()
+        }
+
+        val audioOnly = withAudio
+            .filter { it.vcodec.equals("none", true) || it.vcodec.isBlank() }
+            .sortedWith(
+                compareByDescending<RawStreamDescriptor> { it.bitrateKbps }
+                    .thenByDescending { it.fileSizeBytes },
+            )
+
+        val prioritized = if (audioOnly.isNotEmpty()) audioOnly else withAudio.sortedByDescending { it.bitrateKbps }
+        val detected = prioritized
+            .distinctBy { "${it.ext.lowercase(Locale.US)}_${it.acodec.substringBefore('.').lowercase(Locale.US)}_${it.bitrateKbps}" }
+            .take(4)
+            .map { fmt ->
+                val isAudioOnly = fmt.vcodec.equals("none", true) || fmt.vcodec.isBlank()
+                DetectedAudioFileInfo(
+                    hasAudioTrack = true,
+                    formatId = fmt.formatId,
+                    codec = fmt.acodec.substringBefore('.').uppercase(Locale.US),
+                    containerExt = fmt.ext.lowercase(Locale.US),
+                    bitrateKbps = fmt.bitrateKbps,
+                    sampleRateHz = fmt.sampleRateHz,
+                    channels = fmt.channels,
+                    fileSizeBytes = fmt.fileSizeBytes,
+                    isAudioOnlyStream = isAudioOnly,
+                    note = fmt.formatNote.ifBlank { if (isAudioOnly) "Dedicated audio stream" else "Muxed video+audio track" },
+                    directStreamUrl = fmt.directUrl,
+                )
+            }
+        return true to detected
+    }
 
     fun buildQualityOptions(
         formats: List<RawStreamDescriptor>,

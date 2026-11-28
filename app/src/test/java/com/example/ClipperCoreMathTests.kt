@@ -700,7 +700,236 @@ class ClipperCoreMathTests {
         )
         assertEquals(0f, com.example.core.maps.DeviceLocationSensorTracker.computeTiltCompensatedAzimuthDegrees(tilted45North), 0.1f)
     }
+
+    @Test
+    fun smartPlaceHistory_dwellTrackerFrequentPromotionAndPhotoHelpersAreExact() {
+        // 1. Real GPS Dwell-Time Detector (1–4h auto-save within 120m radius)
+        val tracker = com.example.core.maps.DwellSessionTracker()
+        val cafePt = com.example.core.maps.GeoPoint(19.1297, 72.8707)
+        val t0 = 1_700_000_000_000L
+        assertEquals(null, tracker.onGpsSample(cafePt, t0))
+        // 45 minutes later (under 60m threshold) -> should NOT auto-save yet
+        assertEquals(null, tracker.onGpsSample(com.example.core.maps.GeoPoint(19.1298, 72.8708), t0 + 45 * 60_000L))
+        // 65 minutes later within 120m -> MUST trigger initial auto-save
+        val firstSave = tracker.onGpsSample(com.example.core.maps.GeoPoint(19.1298, 72.8707), t0 + 65 * 60_000L)
+        assertTrue(firstSave != null && !firstSave.isDurationUpdate && firstSave.dwellMinutes == 65)
+        // 130 minutes later -> MUST emit duration update
+        val updateSave = tracker.onGpsSample(cafePt, t0 + 130 * 60_000L)
+        assertTrue(updateSave != null && updateSave.isDurationUpdate && updateSave.dwellMinutes == 130)
+        // Moving >250m away resets anchor
+        assertEquals(null, tracker.onGpsSample(com.example.core.maps.GeoPoint(19.1330, 72.8707), t0 + 140 * 60_000L))
+
+        // 2. Frequent auto-promotion after opening a place 2+ times
+        val place = com.example.core.maps.PlaceResult(
+            id = "p1",
+            name = "Bandra Coffee House",
+            subtitle = "Coffee • Mumbai",
+            point = cafePt,
+            category = "Coffee",
+        )
+        val firstList = com.example.core.maps.SmartPlaceHistoryCodec.recordPlaceInteraction(emptyList(), place, t0)
+        assertEquals(1, firstList.size)
+        assertEquals(com.example.core.maps.SavedRouteCategory.RECENT, firstList[0].listType)
+
+        val secondList = com.example.core.maps.SmartPlaceHistoryCodec.recordPlaceInteraction(firstList, place, t0 + 5_000L)
+        assertEquals(1, secondList.size)
+        assertEquals(2, secondList[0].visitCount)
+        assertEquals(com.example.core.maps.SavedRouteCategory.FREQUENT, secondList[0].listType)
+
+        // 3. Favorite toggle & Dwell badge formatting
+        val (favList, added) = com.example.core.maps.SmartPlaceHistoryCodec.togglePlaceInList(
+            secondList,
+            place,
+            com.example.core.maps.SavedRouteCategory.FAVORITE,
+            t0 + 10_000L,
+        )
+        assertTrue(added)
+        assertEquals(com.example.core.maps.SavedRouteCategory.FAVORITE, favList[0].listType)
+        assertEquals("Stayed 2h 10m", com.example.core.maps.SmartPlaceHistoryCodec.formatDwellBadge(130))
+
+        // 4. Open-now parser & OSM Slippy Map preview tile URL
+        assertEquals(true, com.example.core.maps.MapsGeoMath.isLikelyOpenNow("24/7", 3, 15))
+        assertEquals(true, com.example.core.maps.MapsGeoMath.isLikelyOpenNow("Mo-Su 08:00-22:00", 14, 30))
+        assertEquals(false, com.example.core.maps.MapsGeoMath.isLikelyOpenNow("09:00-18:00", 21, 0))
+        val tileUrl = com.example.core.maps.MapsGeoMath.osmTilePreviewUrl(cafePt, zoom = 17)
+        assertTrue(tileUrl.startsWith("https://tile.openstreetmap.org/17/") && tileUrl.endsWith(".png"))
+    }
+
+    @Test
+    fun audioAcousticDsp_fftPeakAndSpectralSubtractionDenoiseWorkAccurately() {
+        val sr = 16000
+        val n = 1024
+        val re = FloatArray(n) { i -> kotlin.math.sin(2.0 * kotlin.math.PI * 440.0 * i / sr).toFloat() }
+        val im = FloatArray(n)
+        com.example.core.music.AudioAcousticDspEngine.fftRadix2(re, im)
+
+        var maxBin = 1
+        var maxMag = 0f
+        for (b in 1 until n / 2) {
+            val mag = kotlin.math.hypot(re[b], im[b])
+            if (mag > maxMag) {
+                maxMag = mag
+                maxBin = b
+            }
+        }
+        val detectedHz = maxBin.toFloat() * sr / n
+        assertEquals(440f, detectedHz, 16f)
+
+        // Verify Spectral Subtraction suppresses broadband static while preserving tonal signal
+        val rng = java.util.Random(42L)
+        val durationSamples = sr * 2
+        val noisy = FloatArray(durationSamples) { i ->
+            val tone = if (i > sr / 2) 0.45f * kotlin.math.sin(2.0 * kotlin.math.PI * 660.0 * i / sr).toFloat() else 0f
+            val buzz = (rng.nextFloat() * 2f - 1f) * 0.14f
+            tone + buzz
+        }
+        val cleaned = com.example.core.music.AudioAcousticDspEngine.denoiseSpectralSubtraction(noisy, sr)
+        assertEquals(noisy.size, cleaned.size)
+        // Quiet noise-only intro segment should have strictly lower energy relative to tonal body after spectral subtraction
+        val rawIntroRms = kotlin.math.sqrt((0 until sr / 3).map { noisy[it] * noisy[it] }.average())
+        val rawBodyRms = kotlin.math.sqrt((sr until (sr * 3) / 2).map { noisy[it] * noisy[it] }.average())
+        val cleanIntroRms = kotlin.math.sqrt((0 until sr / 3).map { cleaned[it] * cleaned[it] }.average())
+        val cleanBodyRms = kotlin.math.sqrt((sr until (sr * 3) / 2).map { cleaned[it] * cleaned[it] }.average())
+        assertTrue("Expected SNR ratio improvement after spectral subtraction", (cleanBodyRms / cleanIntroRms) > (rawBodyRms / rawIntroRms))
+    }
+
+    @Test
+    fun audioAcousticDsp_constellationMatcherIdentifiesNoisy3SecondSliceFromTrack() {
+        val sr = 11025
+        val trackDurSec = 10
+        val track = FloatArray(sr * trackDurSec) { i ->
+            val t = i.toDouble() / sr
+            // Evolving polyphonic chord progression so constellation landmarks are unique in time
+            val chordBase = when ((t / 2.0).toInt() % 4) {
+                0 -> 261.63
+                1 -> 329.63
+                2 -> 392.00
+                else -> 440.00
+            }
+            val melody = chordBase * (1.0 + 0.5 * ((t * 2.0).toInt() % 3))
+            val s1 = 0.40 * kotlin.math.sin(2.0 * kotlin.math.PI * chordBase * t)
+            val s2 = 0.30 * kotlin.math.sin(2.0 * kotlin.math.PI * (chordBase * 1.498) * t)
+            val s3 = 0.25 * kotlin.math.sin(2.0 * kotlin.math.PI * melody * t)
+            val s4 = 0.15 * kotlin.math.sin(2.0 * kotlin.math.PI * (melody * 2.01) * t)
+            (s1 + s2 + s3 + s4).toFloat()
+        }
+
+        val fullFp = com.example.core.music.AudioAcousticDspEngine.extractConstellationFingerprint(track, sr)
+        assertTrue("Expected rich constellation hashes, got ${fullFp.hashes.size}", fullFp.hashes.size > 40)
+        assertEquals(48, fullFp.spectrogram.timeColumns.size)
+
+        val vaultTrack = com.example.core.music.VaultTrackEntry(
+            id = "track_1",
+            title = "Polyphonic Test Anthem",
+            artist = "Clipper DSP",
+            durationSec = trackDurSec.toFloat(),
+            sampleRateHz = sr,
+            createdAtEpochMs = 1L,
+            hashes = fullFp.hashes,
+        )
+
+        // Extract a 3.2-second slice starting at t = 4.0s and inject realistic room noise/buzz!
+        val rng = java.util.Random(7L)
+        val startIdx = (4.0f * sr).toInt()
+        val sliceLen = (3.2f * sr).toInt()
+        val noisySlice = FloatArray(sliceLen) { i ->
+            track[startIdx + i] + (rng.nextFloat() * 2f - 1f) * 0.08f
+        }
+        val queryFp = com.example.core.music.AudioAcousticDspEngine.extractConstellationFingerprint(noisySlice, sr)
+        val match = com.example.core.music.AudioAcousticDspEngine.matchConstellationHashes(
+            queryHashes = queryFp.hashes,
+            vaultTracks = listOf(vaultTrack),
+            minCoherentVotes = 6,
+        )
+        assertTrue("Expected offline vault match from noisy 3.2s slice", match != null)
+        assertEquals("Polyphonic Test Anthem", match!!.entry.title)
+        assertEquals(4.0f, match.matchedOffsetSec, 0.35f)
+        assertTrue(match.confidencePercent >= 55)
+
+        // Verify Shazam v2 binary signature packet generates valid base64 data URI
+        val shazamSig = com.example.core.music.AudioAcousticDspEngine.encodeShazamSignature(noisySlice, sr)
+        assertTrue(shazamSig != null && shazamSig.first.startsWith("data:audio/vnd.shazam.sig;base64,"))
+    }
+
+    @Test
+    fun audioAcousticDsp_detectsKeyAndBestMusicalWindow() {
+        val sr = 16000
+        // 2s silence + 4s pure A-major triad (A4=440Hz, C#5=554.37Hz, E5=659.25Hz) + 2s silence
+        val pcm = FloatArray(sr * 8) { i ->
+            val t = i.toDouble() / sr
+            if (t in 2.0..6.0) {
+                (0.4 * kotlin.math.sin(2.0 * kotlin.math.PI * 440.0 * t) +
+                    0.35 * kotlin.math.sin(2.0 * kotlin.math.PI * 554.37 * t) +
+                    0.35 * kotlin.math.sin(2.0 * kotlin.math.PI * 659.25 * t)).toFloat()
+            } else 0f
+        }
+
+        val bestWin = com.example.core.music.AudioAcousticDspEngine.selectBestMusicWindow(pcm, sr, windowDurationSec = 3.0f)
+        assertTrue("Best window should land inside 2..6s music section, got start=${bestWin.startSec}", bestWin.startSec in 1.4f..3.2f)
+
+        val (keyName, camelot, domHz) = com.example.core.music.AudioAcousticDspEngine.detectMusicalKeyAndDominantFreq(bestWin.samples, sr)
+        assertTrue("Expected A Major or relative F# Minor, got $keyName", keyName == "A Major" || keyName == "F# Minor")
+        assertTrue(camelot.isNotBlank() && camelot != "--")
+        assertTrue(domHz in 420f..680f)
+    }
+
+    @Test
+    fun musicRecognitionParsers_extractSocialCreditsAndParseLrcAndDetectNoAudio() {
+        val candidates = com.example.core.music.MusicRecognitionApiClient.extractMusicCandidatesFromMetadata(
+            videoTitle = "The Weeknd - Blinding Lights (Official Audio) [4K] #shorts #viral",
+            uploader = "ShortsEdits",
+            embeddedTrack = null,
+            embeddedArtist = null,
+            description = "Song: Blinding Lights - The Weeknd\nSubscribe for more!",
+        )
+        assertTrue(candidates.isNotEmpty())
+        assertTrue(candidates.any { it.title.contains("Blinding Lights", ignoreCase = true) })
+        assertTrue(candidates.any { it.artist?.contains("The Weeknd", ignoreCase = true) == true })
+
+        val lrc = "[00:12.50] Yeah, I've been tryna call\n[00:16.20] I've been on my own for long enough"
+        val parsedLrc = com.example.core.music.MusicRecognitionApiClient.parseLrcSyncedLyrics(lrc)
+        assertEquals(2, parsedLrc.size)
+        assertEquals(12500L, parsedLrc[0].timeMs)
+        assertEquals("Yeah, I've been tryna call", parsedLrc[0].text)
+
+        // Verify YoutubeDlMediaEngine explicitly detects both presence AND absence of audio tracks
+        val videoOnlyStreams = listOf(
+            com.example.core.media.YoutubeDlMediaEngine.RawStreamDescriptor(
+                formatId = "137",
+                ext = "mp4",
+                vcodec = "avc1.640028",
+                acodec = "none",
+                width = 1920,
+                height = 1080,
+                fps = 30,
+                fileSizeBytes = 12_000_000L,
+            ),
+        )
+        val (hasNoAudio, emptyList) = com.example.core.media.YoutubeDlMediaEngine.detectAudioFilesFromStreams(videoOnlyStreams)
+        assertFalse(hasNoAudio)
+        assertTrue(emptyList.isEmpty())
+
+        val withAudioStreams = videoOnlyStreams + com.example.core.media.YoutubeDlMediaEngine.RawStreamDescriptor(
+            formatId = "140",
+            ext = "m4a",
+            vcodec = "none",
+            acodec = "mp4a.40.2",
+            width = 0,
+            height = 0,
+            fps = 0,
+            fileSizeBytes = 2_400_000L,
+            bitrateKbps = 128,
+            sampleRateHz = 44100,
+            channels = 2,
+        )
+        val (hasAudio, audioFiles) = com.example.core.media.YoutubeDlMediaEngine.detectAudioFilesFromStreams(withAudioStreams)
+        assertTrue(hasAudio)
+        assertEquals(1, audioFiles.size)
+        assertEquals("MP4A", audioFiles[0].codec)
+        assertEquals(128, audioFiles[0].bitrateKbps)
+    }
 }
+
 
 
 

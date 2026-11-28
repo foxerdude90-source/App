@@ -20,7 +20,16 @@ import com.example.core.media.SaveCategory
 import com.example.core.media.SavedMediaResult
 import com.example.core.media.VideoProcessingEngine
 import com.example.core.media.YoutubeDlMediaEngine
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import com.example.core.music.AudioDspFilterMode
+import com.example.core.music.AudioPcmDecoder
+import com.example.core.music.IdentifiedSong
+import com.example.core.music.MusicHistoryVaultStore
+import com.example.core.music.MusicRecognitionApiClient
+import com.example.core.music.MusicalTelemetry
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,6 +68,14 @@ data class FetchUiState(
     val cookieStatusMessage: String? = null,
     // Optional local file import / audio extraction support
     val localProbed: ProbedMediaInfo? = null,
+    // Inline Audio File & Song Detector state (side feature on fetched URL)
+    val isDetectingSong: Boolean = false,
+    val songDetectionStatus: String = "",
+    val detectedSong: IdentifiedSong? = null,
+    val detectedSongTelemetry: MusicalTelemetry? = null,
+    val songDetectionNotice: String? = null,
+    val isPlayingInlineSongPreview: Boolean = false,
+    val showInlineLyrics: Boolean = false,
 )
 
 class FetchViewModel(application: Application) : AndroidViewModel(application) {
@@ -73,6 +90,9 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
     private var activeProcessId: String? = null
     private var activeBatchJob: Job? = null
     private var activeBatchProcessId: String? = null
+    private var activeSongScanJob: Job? = null
+    private var activeSongScanProcessId: String? = null
+    private var inlinePreviewPlayer: MediaPlayer? = null
 
     fun selectMode(mode: FetchWorkspaceMode) {
         _uiState.update { it.copy(mode = mode, batchNotice = null) }
@@ -83,6 +103,8 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearUrl() {
+        cancelInlineSongScan()
+        stopInlineSongPreview()
         _uiState.update {
             it.copy(
                 urlInput = "",
@@ -91,6 +113,10 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                 errorMessage = null,
                 showAuthPromptOnError = false,
                 savedResult = null,
+                detectedSong = null,
+                detectedSongTelemetry = null,
+                songDetectionNotice = null,
+                showInlineLyrics = false,
             )
         }
     }
@@ -165,6 +191,8 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         activeJob?.cancel()
+        cancelInlineSongScan()
+        stopInlineSongPreview()
         activeJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -175,6 +203,12 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                     localProbed = null,
                     metadata = null,
                     selectedQuality = null,
+                    detectedSong = null,
+                    detectedSongTelemetry = null,
+                    songDetectionNotice = null,
+                    songDetectionStatus = "",
+                    isDetectingSong = false,
+                    showInlineLyrics = false,
                 )
             }
             try {
@@ -185,6 +219,13 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                         metadata = info,
                         selectedQuality = info.qualities.firstOrNull(),
                     )
+                }
+                if (info.hasAudioTrack) {
+                    launchQuickInlineSongAttribution(info)
+                } else {
+                    _uiState.update {
+                        it.copy(songDetectionNotice = "No audio file detected in this video/short.")
+                    }
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -199,6 +240,216 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    private fun launchQuickInlineSongAttribution(info: FetchedMediaMetadata) {
+        activeSongScanJob?.cancel()
+        activeSongScanJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isDetectingSong = true,
+                    songDetectionStatus = "Checking embedded audio credits...",
+                    songDetectionNotice = null,
+                )
+            }
+            try {
+                val matches = MusicRecognitionApiClient.quickIdentifyFromSocialMetadata(
+                    videoTitle = info.title,
+                    uploader = info.uploader,
+                    embeddedTrack = info.embeddedTrack,
+                    embeddedArtist = info.embeddedArtist,
+                    description = info.description,
+                    sourceUrl = info.sourceUrl,
+                )
+                val first = matches.firstOrNull()
+                if (first != null) {
+                    MusicHistoryVaultStore.saveSongToHistory(getApplication(), first)
+                }
+                _uiState.update {
+                    it.copy(
+                        isDetectingSong = false,
+                        songDetectionStatus = "",
+                        detectedSong = first,
+                        songDetectionNotice = if (first == null) {
+                            "Tap Deep Audio Scan to fingerprint the actual 2–4s audio & vocals inside this clip."
+                        } else null,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        isDetectingSong = false,
+                        songDetectionStatus = "",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Extracts a compact audio sample from the fetched social media URL, applies Spectral Subtraction
+     * noise reduction + 2–4s peak musicality windowing + acoustic fingerprinting, and identifies the exact song.
+     */
+    fun runDeepSongScanForFetchedMedia() {
+        val meta = _uiState.value.metadata ?: return
+        if (!meta.hasAudioTrack) {
+            _uiState.update { it.copy(songDetectionNotice = "No audio file detected in this video/short.") }
+            return
+        }
+        stopInlineSongPreview()
+        activeSongScanJob?.cancel()
+        val procId = "clipper_inline_song_${UUID.randomUUID()}"
+        activeSongScanProcessId = procId
+
+        activeSongScanJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isDetectingSong = true,
+                    songDetectionStatus = "Extracting audio clip for 2–4s acoustic scan...",
+                    songDetectionNotice = null,
+                )
+            }
+            var tempAudio: File? = null
+            try {
+                tempAudio = YoutubeDlMediaEngine.extractAudioSampleFile(
+                    context = getApplication(),
+                    originalUrl = meta.sourceUrl,
+                    processId = procId,
+                    maxDurationSec = 18,
+                )
+                _uiState.update { it.copy(songDetectionStatus = "Decoding audio & removing noise/buzz...") }
+                val decoded = AudioPcmDecoder.decodeToPcm(
+                    context = getApplication(),
+                    file = tempAudio,
+                    startMs = 0L,
+                    maxDurationMs = 18_000L,
+                )
+                if (decoded == null || !decoded.audioInfo.hasAudioTrack || decoded.left.isEmpty()) {
+                    _uiState.update {
+                        it.copy(
+                            isDetectingSong = false,
+                            songDetectionStatus = "",
+                            songDetectionNotice = "No decodable audio signal detected in this clip.",
+                        )
+                    }
+                    return@launch
+                }
+
+                val candidates = MusicRecognitionApiClient.extractMusicCandidatesFromMetadata(
+                    videoTitle = meta.title,
+                    uploader = meta.uploader,
+                    embeddedTrack = meta.embeddedTrack,
+                    embeddedArtist = meta.embeddedArtist,
+                    description = meta.description,
+                )
+                val vault = MusicHistoryVaultStore.loadVault(getApplication())
+                val result = MusicRecognitionApiClient.recognizeFromPcm(
+                    left = decoded.left,
+                    right = decoded.right,
+                    sampleRateHz = decoded.sampleRateHz,
+                    filterMode = AudioDspFilterMode.CLEAN_DENOISE,
+                    vaultTracks = vault,
+                    sourceLabel = meta.extractorName ?: "Social Downloader",
+                    sourceUrl = meta.sourceUrl,
+                    metadataFallbackCandidates = candidates,
+                    onStatus = { s -> _uiState.update { it.copy(songDetectionStatus = s) } },
+                )
+                result.primarySong?.let { song ->
+                    MusicHistoryVaultStore.saveSongToHistory(getApplication(), song)
+                }
+                _uiState.update {
+                    it.copy(
+                        isDetectingSong = false,
+                        songDetectionStatus = "",
+                        detectedSong = result.primarySong ?: it.detectedSong,
+                        detectedSongTelemetry = result.telemetry,
+                        songDetectionNotice = if (result.primarySong == null) result.diagnosticMessage else null,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                _uiState.update { it.copy(isDetectingSong = false, songDetectionStatus = "") }
+                throw ce
+            } catch (t: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        isDetectingSong = false,
+                        songDetectionStatus = "",
+                        songDetectionNotice = t.message?.take(160) ?: "Deep audio scan failed.",
+                    )
+                }
+            } finally {
+                if (activeSongScanProcessId == procId) activeSongScanProcessId = null
+                tempAudio?.delete()
+            }
+        }
+    }
+
+    fun selectBestAudioAndDownload() {
+        val meta = _uiState.value.metadata ?: return
+        val audioOpt = meta.qualities.firstOrNull { it.trackType == QualityTrackType.AUDIO } ?: return
+        _uiState.update { it.copy(selectedQuality = audioOpt) }
+        startDownload()
+    }
+
+    fun toggleInlineLyrics() {
+        _uiState.update { it.copy(showInlineLyrics = !it.showInlineLyrics) }
+    }
+
+    fun toggleInlineSongPreview() {
+        val url = _uiState.value.detectedSong?.previewAudioUrl ?: return
+        if (_uiState.value.isPlayingInlineSongPreview) {
+            stopInlineSongPreview()
+            return
+        }
+        stopInlineSongPreview()
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val player = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build(),
+                    )
+                    setDataSource(url)
+                    setOnCompletionListener {
+                        _uiState.update { it.copy(isPlayingInlineSongPreview = false) }
+                        runCatching { release() }
+                        inlinePreviewPlayer = null
+                    }
+                    setOnErrorListener { mp, _, _ ->
+                        _uiState.update { it.copy(isPlayingInlineSongPreview = false) }
+                        runCatching { mp.release() }
+                        inlinePreviewPlayer = null
+                        true
+                    }
+                    prepare()
+                    start()
+                }
+                inlinePreviewPlayer = player
+                _uiState.update { it.copy(isPlayingInlineSongPreview = true) }
+            }.onFailure {
+                _uiState.update { it.copy(isPlayingInlineSongPreview = false) }
+            }
+        }
+    }
+
+    private fun cancelInlineSongScan() {
+        activeSongScanProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
+        activeSongScanProcessId = null
+        activeSongScanJob?.cancel()
+        activeSongScanJob = null
+    }
+
+    private fun stopInlineSongPreview() {
+        runCatching {
+            inlinePreviewPlayer?.stop()
+            inlinePreviewPlayer?.release()
+        }
+        inlinePreviewPlayer = null
+        _uiState.update { it.copy(isPlayingInlineSongPreview = false) }
     }
 
     fun startDownload() {
@@ -678,6 +929,8 @@ class FetchViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         activeProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
         activeBatchProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
+        activeSongScanProcessId?.let { YoutubeDlMediaEngine.cancelDownload(it) }
+        stopInlineSongPreview()
         super.onCleared()
     }
 }
