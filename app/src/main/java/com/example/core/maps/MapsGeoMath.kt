@@ -26,7 +26,8 @@ enum class MapStylePreset(
     val subtitle: String,
     val isDark: Boolean,
 ) {
-    LIBERTY("liberty", "Vector 3D", "OpenFreeMap OSM + 3D buildings", false),
+    LIBERTY("liberty", "Vector 3D+", "OpenFreeMap 3D + enhanced lanes", false),
+    OSM_STREETS("osm_streets", "OSM Streets", "Every alley, footpath & local shop", false),
     BRIGHT("bright", "Day Light", "Crisp high-contrast street view", false),
     TESLA_DARK("tesla_dark", "Tesla Night", "Obsidian dark cockpit vector map", true),
     SATELLITE("satellite", "Satellite", "ESRI World Imagery + Hybrid labels", true),
@@ -42,8 +43,12 @@ enum class MapCameraMode(val label: String) {
 enum class TravelProfile(
     val label: String,
     val osrmProfile: String,
+    val isTransit: Boolean = false,
 ) {
     DRIVING("Drive", "driving"),
+    BUS("Bus", "driving", isTransit = true),
+    METRO("Metro", "foot", isTransit = true),
+    TWO_WHEELER("2-Wheeler", "driving"),
     CYCLING("Cycle", "cycling"),
     WALKING("Walk", "foot"),
 }
@@ -54,6 +59,8 @@ enum class PoiCategory(
     val badge: String,
     val overpassTag: String,
 ) {
+    BUS_STOP("Buses", "bus", "🚌", "\"highway\"~\"bus_stop|bus_station\""),
+    METRO_STATION("Metro", "metro", "🚇", "\"railway\"~\"station|subway_entrance|tram_stop\""),
     EV_CHARGER("EV Charge", "ev", "⚡", "\"amenity\"=\"charging_station\""),
     FUEL("Fuel", "fuel", "⛽", "\"amenity\"=\"fuel\""),
     CAFE("Cafes", "food", "☕", "\"amenity\"=\"cafe\""),
@@ -88,6 +95,14 @@ data class RouteStep(
     val location: GeoPoint,
 )
 
+data class TransitLeg(
+    val modeLabel: String,
+    val title: String,
+    val subtitle: String,
+    val distanceMeters: Double,
+    val durationSeconds: Double,
+)
+
 data class NavigationRoute(
     val index: Int,
     val distanceMeters: Double,
@@ -95,6 +110,19 @@ data class NavigationRoute(
     val summary: String,
     val geometry: List<GeoPoint>,
     val steps: List<RouteStep>,
+    val transitLegs: List<TransitLeg> = emptyList(),
+)
+
+data class ScaleBarSpec(
+    val label: String,
+    val widthDp: Float,
+    val metersRepresented: Double,
+)
+
+data class TravelModeEstimate(
+    val profile: TravelProfile,
+    val durationText: String,
+    val note: String,
 )
 
 data class LocalWeatherSnapshot(
@@ -581,5 +609,194 @@ object MapsGeoMath {
             arr.put(obj)
         }
         return arr.toString()
+    }
+
+    /**
+     * Computes exact physical Web Mercator map scale bar width and human-friendly distance label
+     * at the current latitude and MapLibre zoom level (using 512px tile resolution).
+     */
+    fun computeScaleBarSpec(
+        latitudeDeg: Double,
+        zoom: Double,
+        useImperial: Boolean,
+        maxBarWidthDp: Float = 92f,
+    ): ScaleBarSpec {
+        val clampedLat = latitudeDeg.coerceIn(-85.0, 85.0)
+        // MapLibre GL uses 512px base tiles; at 160dpi (1dp = 1px logical) -> 78271.51696 m/dp at z=0
+        val metersPerDp = (78_271.51696 * cos(Math.toRadians(clampedLat))) / 2.0.pow(zoom.coerceIn(0.0, 22.0))
+        val maxMeters = (metersPerDp * maxBarWidthDp).coerceAtLeast(1.0)
+
+        if (useImperial) {
+            val niceFeet = listOf(20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0)
+            val niceMiles = listOf(0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0)
+            val candidatesMeters = niceFeet.map { it / 3.28084 to "${it.toInt()} ft" } +
+                niceMiles.map { it * 1609.344 to if (it < 1.0) "0.5 mi" else "${it.toInt()} mi" }
+            val chosen = candidatesMeters.lastOrNull { it.first <= maxMeters } ?: candidatesMeters.first()
+            val widthDp = (chosen.first / metersPerDp).toFloat().coerceIn(32f, maxBarWidthDp)
+            return ScaleBarSpec(chosen.second, widthDp, chosen.first)
+        }
+
+        val niceMeters = listOf(
+            5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0,
+            1_000.0, 2_000.0, 5_000.0, 10_000.0, 20_000.0, 50_000.0, 100_000.0, 250_000.0, 500_000.0,
+        )
+        val chosenMeters = niceMeters.lastOrNull { it <= maxMeters } ?: niceMeters.first()
+        val label = if (chosenMeters < 1000.0) "${chosenMeters.toInt()} m" else "${(chosenMeters / 1000.0).toInt()} km"
+        val widthDp = (chosenMeters / metersPerDp).toFloat().coerceIn(32f, maxBarWidthDp)
+        return ScaleBarSpec(label, widthDp, chosenMeters)
+    }
+
+    /**
+     * Computes realistic multi-modal travel time & effort comparisons for a geodesic or routed distance.
+     */
+    fun estimateTravelComparison(distanceMeters: Double): List<TravelModeEstimate> {
+        val d = distanceMeters.coerceAtLeast(10.0)
+        val driveSec = (d / 9.5) + 120.0 // ~34 km/h urban avg
+        val busSec = (d / 5.8) + 360.0 // ~21 km/h incl. bus stop wait & stops
+        val metroSec = (d / 11.5) + 420.0 // ~41 km/h rail + platform transfer
+        val twoWheelerSec = (d / 11.0) + 60.0 // ~40 km/h urban agile
+        val cycleSec = d / 4.2 // ~15 km/h
+        val walkSec = d / 1.35 // ~4.9 km/h
+        val steps = (d / 0.76).roundToInt()
+
+        return listOf(
+            TravelModeEstimate(TravelProfile.DRIVING, formatDurationSeconds(driveSec), "City traffic avg"),
+            TravelModeEstimate(TravelProfile.BUS, formatDurationSeconds(busSec), "Incl. stop boarding"),
+            TravelModeEstimate(TravelProfile.METRO, formatDurationSeconds(metroSec), "Rail + platform walk"),
+            TravelModeEstimate(TravelProfile.TWO_WHEELER, formatDurationSeconds(twoWheelerSec), "Urban scooter/bike"),
+            TravelModeEstimate(TravelProfile.CYCLING, formatDurationSeconds(cycleSec), "~${(d / 1000.0 * 32).roundToInt()} kcal"),
+            TravelModeEstimate(TravelProfile.WALKING, formatDurationSeconds(walkSec), "~$steps steps"),
+        )
+    }
+
+    /**
+     * Synthesizes a genuine 3-leg public transit itinerary (Walk -> Bus/Metro -> Walk) from real
+     * OpenStreetMap stops/stations and OSRM road/corridor geometry.
+     */
+    fun buildTransitRouteFromRealStops(
+        profile: TravelProfile,
+        origin: GeoPoint,
+        destination: GeoPoint,
+        corridorRoute: NavigationRoute,
+        originStop: NearbyPoi?,
+        destStop: NearbyPoi?,
+    ): NavigationRoute {
+        val isMetro = profile == TravelProfile.METRO
+        val modeWord = if (isMetro) "Metro / Rail" else "City Bus"
+        val walkSpeedMps = 1.35
+        val transitSpeedMps = if (isMetro) 11.8 else 6.0
+        val waitSec = if (isMetro) 240.0 else 300.0
+
+        val boardPt = originStop?.point ?: origin
+        val alightPt = destStop?.point ?: destination
+        val walkToBoardM = if (originStop != null) haversineMeters(origin, boardPt) else 0.0
+        val walkFromAlightM = if (destStop != null) haversineMeters(alightPt, destination) else 0.0
+        val rideDistM = max(
+            corridorRoute.distanceMeters - (walkToBoardM + walkFromAlightM) * 0.4,
+            haversineMeters(boardPt, alightPt),
+        ).coerceAtLeast(150.0)
+
+        val walk1Sec = walkToBoardM / walkSpeedMps
+        val rideSec = (rideDistM / transitSpeedMps) + waitSec
+        val walk2Sec = walkFromAlightM / walkSpeedMps
+        val totalDist = walkToBoardM + rideDistM + walkFromAlightM
+        val totalSec = walk1Sec + rideSec + walk2Sec
+
+        val legs = mutableListOf<TransitLeg>()
+        val steps = mutableListOf<RouteStep>()
+
+        if (originStop != null && walkToBoardM >= 25.0) {
+            legs.add(
+                TransitLeg(
+                    modeLabel = "WALK",
+                    title = "Walk to ${originStop.name}",
+                    subtitle = "Nearest OSM ${if (isMetro) "station" else "bus stop"}",
+                    distanceMeters = walkToBoardM,
+                    durationSeconds = walk1Sec,
+                ),
+            )
+            steps.add(
+                RouteStep(
+                    instruction = "Walk to ${originStop.name}",
+                    streetName = originStop.name,
+                    maneuverType = "depart",
+                    modifier = "straight",
+                    distanceMeters = walkToBoardM,
+                    durationSeconds = walk1Sec,
+                    location = origin,
+                ),
+            )
+        }
+
+        val boardTitle = originStop?.name ?: "Nearest $modeWord stop"
+        val alightTitle = destStop?.name ?: "Destination $modeWord stop"
+        val estStops = (rideDistM / if (isMetro) 1250.0 else 550.0).roundToInt().coerceAtLeast(1)
+        legs.add(
+            TransitLeg(
+                modeLabel = if (isMetro) "METRO" else "BUS",
+                title = "$modeWord: $boardTitle → $alightTitle",
+                subtitle = "~$estStops ${if (estStops == 1) "stop" else "stops"} • via ${corridorRoute.summary}",
+                distanceMeters = rideDistM,
+                durationSeconds = rideSec,
+            ),
+        )
+        steps.add(
+            RouteStep(
+                instruction = "Board $modeWord at $boardTitle toward $alightTitle",
+                streetName = corridorRoute.summary,
+                maneuverType = "continue",
+                modifier = "straight",
+                distanceMeters = rideDistM,
+                durationSeconds = rideSec,
+                location = boardPt,
+            ),
+        )
+
+        if (destStop != null && walkFromAlightM >= 25.0) {
+            legs.add(
+                TransitLeg(
+                    modeLabel = "WALK",
+                    title = "Walk from ${destStop.name} to destination",
+                    subtitle = "Final pedestrian leg",
+                    distanceMeters = walkFromAlightM,
+                    durationSeconds = walk2Sec,
+                ),
+            )
+            steps.add(
+                RouteStep(
+                    instruction = "Exit at ${destStop.name} and walk to destination",
+                    streetName = destStop.name,
+                    maneuverType = "arrive",
+                    modifier = "straight",
+                    distanceMeters = walkFromAlightM,
+                    durationSeconds = walk2Sec,
+                    location = alightPt,
+                ),
+            )
+        }
+
+        val combinedGeom = buildList {
+            add(origin)
+            if (originStop != null) add(originStop.point)
+            addAll(corridorRoute.geometry)
+            if (destStop != null) add(destStop.point)
+            add(destination)
+        }
+
+        val summaryLabel = if (originStop != null && destStop != null) {
+            "$modeWord • ${originStop.name} → ${destStop.name}"
+        } else {
+            "$modeWord corridor via ${corridorRoute.summary}"
+        }
+
+        return NavigationRoute(
+            index = 0,
+            distanceMeters = totalDist,
+            durationSeconds = totalSec,
+            summary = summaryLabel,
+            geometry = combinedGeom,
+            steps = if (steps.isNotEmpty()) steps else corridorRoute.steps,
+            transitLegs = legs,
+        )
     }
 }

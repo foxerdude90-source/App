@@ -92,17 +92,83 @@ class MapsApiClient(
         destination: GeoPoint,
         profile: TravelProfile,
     ): List<NavigationRoute> = withContext(Dispatchers.IO) {
-        val url = String.format(
-            Locale.US,
-            "https://router.project-osrm.org/route/v1/%s/%.6f,%.6f;%.6f,%.6f?overview=full&geometries=geojson&steps=true&alternatives=true",
-            profile.osrmProfile,
-            origin.lng,
-            origin.lat,
-            destination.lng,
-            destination.lat,
+        when (profile) {
+            TravelProfile.BUS, TravelProfile.METRO -> {
+                val baseRoutes = queryOsrmWithFallback(origin, destination, "driving", alternatives = false)
+                val corridor = baseRoutes.firstOrNull() ?: return@withContext emptyList()
+
+                val stopCategory = if (profile == TravelProfile.METRO) PoiCategory.METRO_STATION else PoiCategory.BUS_STOP
+                val searchRadius = if (profile == TravelProfile.METRO) 4500 else 1800
+                val originStops = fetchNearbyPois(origin, stopCategory, radiusMeters = searchRadius)
+                val destStops = fetchNearbyPois(destination, stopCategory, radiusMeters = searchRadius)
+
+                val originStop = originStops.firstOrNull()
+                val destStop = destStops.firstOrNull { it.id != originStop?.id } ?: destStops.firstOrNull()
+
+                val transitRoute = MapsGeoMath.buildTransitRouteFromRealStops(
+                    profile = profile,
+                    origin = origin,
+                    destination = destination,
+                    corridorRoute = corridor,
+                    originStop = originStop,
+                    destStop = destStop,
+                )
+                listOf(transitRoute)
+            }
+            TravelProfile.TWO_WHEELER -> {
+                queryOsrmWithFallback(origin, destination, "driving", alternatives = true).map { route ->
+                    route.copy(
+                        durationSeconds = (route.durationSeconds * 0.84).coerceAtLeast(60.0),
+                        summary = "2-Wheeler • ${route.summary}",
+                    )
+                }
+            }
+            else -> {
+                queryOsrmWithFallback(origin, destination, profile.osrmProfile, alternatives = true)
+            }
+        }
+    }
+
+    private fun queryOsrmWithFallback(
+        origin: GeoPoint,
+        destination: GeoPoint,
+        osrmProfile: String,
+        alternatives: Boolean,
+    ): List<NavigationRoute> {
+        val fossgisSubpath = when (osrmProfile) {
+            "cycling" -> "routed-bike"
+            "foot" -> "routed-foot"
+            else -> "routed-car"
+        }
+        val altFlag = if (alternatives) "true" else "false"
+        val candidateUrls = listOf(
+            String.format(
+                Locale.US,
+                "https://routing.openstreetmap.de/%s/route/v1/driving/%.6f,%.6f;%.6f,%.6f?overview=full&geometries=geojson&steps=true&alternatives=%s",
+                fossgisSubpath,
+                origin.lng,
+                origin.lat,
+                destination.lng,
+                destination.lat,
+                altFlag,
+            ),
+            String.format(
+                Locale.US,
+                "https://router.project-osrm.org/route/v1/%s/%.6f,%.6f;%.6f,%.6f?overview=full&geometries=geojson&steps=true&alternatives=%s",
+                osrmProfile,
+                origin.lng,
+                origin.lat,
+                destination.lng,
+                destination.lat,
+                altFlag,
+            ),
         )
-        val body = executeGet(url) ?: return@withContext emptyList()
-        MapsGeoMath.parseOsrmRoutesJson(body)
+        for (url in candidateUrls) {
+            val body = executeGet(url) ?: continue
+            val parsed = runCatching { MapsGeoMath.parseOsrmRoutesJson(body) }.getOrDefault(emptyList())
+            if (parsed.isNotEmpty()) return parsed
+        }
+        return emptyList()
     }
 
     suspend fun fetchNearbyPois(

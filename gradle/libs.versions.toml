@@ -44,6 +44,7 @@ media3 = "1.5.1"
 mlkitSegmentationSelfie = "16.0.0-beta6"
 mlkitSubjectSegmentation = "16.0.0-beta1"
 youtubedlAndroid = "0.18.1"
+maplibreAndroidSdk = "11.11.0"
 
 
 [libraries]
@@ -107,6 +108,7 @@ mlkit-segmentation-selfie = { group = "com.google.mlkit", name = "segmentation-s
 mlkit-subject-segmentation = { group = "com.google.android.gms", name = "play-services-mlkit-subject-segmentation", version.ref = "mlkitSubjectSegmentation" }
 youtubedl-library = { group = "io.github.junkfood02.youtubedl-android", name = "library", version.ref = "youtubedlAndroid" }
 youtubedl-ffmpeg = { group = "io.github.junkfood02.youtubedl-android", name = "ffmpeg", version.ref = "youtubedlAndroid" }
+maplibre-android-sdk = { group = "org.maplibre.gl", name = "android-sdk", version.ref = "maplibreAndroidSdk" }
 
 
 [plugins]

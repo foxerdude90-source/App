@@ -60,7 +60,11 @@ data class MapsUiState(
     val terrain3dEnabled: Boolean = false,
     val buildings3dEnabled: Boolean = true,
     val globeProjectionEnabled: Boolean = false,
+    val transitOverlayEnabled: Boolean = false,
     val useImperialUnits: Boolean = false,
+    // Genuine MapLibre Region Rendering Telemetry
+    val isRegionRendering: Boolean = false,
+    val renderErrorText: String? = null,
     // Search & Place Inspector
     val searchQuery: String = "",
     val isSearching: Boolean = false,
@@ -95,6 +99,7 @@ data class MapsUiState(
     val savedBookmarks: List<SavedPlaceBookmark> = emptyList(),
     val showLayersSheet: Boolean = false,
     val showBookmarksSheet: Boolean = false,
+    val showTelemetryDetailSheet: Boolean = false,
     val statusBanner: String? = null,
     // One-shot camera command channel
     val cameraCommandSeq: Long = 0L,
@@ -104,7 +109,15 @@ data class MapsUiState(
         get() = routes.getOrNull(activeRouteIndex)
 
     val effectiveHeadingDeg: Float
-        get() = liveLocation?.gpsBearingDegrees ?: compassHeadingDeg
+        get() {
+            val loc = liveLocation
+            val gpsCourse = loc?.gpsBearingDegrees
+            return if (loc != null && gpsCourse != null && loc.speedMps >= 2.5f) {
+                gpsCourse
+            } else {
+                compassHeadingDeg
+            }
+        }
 
     val measuredLengthMeters: Double
         get() {
@@ -171,12 +184,16 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         return fine || coarse
     }
 
-    fun onLocationPermissionResult(granted: Boolean) {
+    fun onLocationPermissionResult(granted: Boolean, userInitiated: Boolean = true) {
         _uiState.update {
             it.copy(
                 hasLocationPermission = granted,
-                locationPermissionDenied = !granted,
-                statusBanner = if (granted) "Live GPS activated" else "Location permission denied — you can still browse, search & plan routes",
+                locationPermissionDenied = if (userInitiated) !granted else it.locationPermissionDenied && !granted,
+                statusBanner = when {
+                    granted && userInitiated -> "Live GPS activated"
+                    !granted && userInitiated -> "Location permission denied — you can still browse, search & plan routes"
+                    else -> it.statusBanner
+                },
             )
         }
         if (granted) {
@@ -238,13 +255,14 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         var nextTrail = prevState.tripBreadcrumb
         var nextTripDist = prevState.tripDistanceMeters
         var nextMaxSpeed = prevState.tripMaxSpeedMps
-        if (prevState.isRecordingTrip) {
+        if (prevState.isRecordingTrip && fix.accuracyMeters <= 32f) {
             val lastPt = nextTrail.lastOrNull()
             if (lastPt == null) {
                 nextTrail = listOf(fix.point)
             } else {
                 val delta = MapsGeoMath.haversineMeters(lastPt, fix.point)
-                if (delta >= 4.0 && delta < 500.0) {
+                val minStep = kotlin.math.max(6.0, fix.accuracyMeters * 0.45)
+                if (delta >= minStep && delta < 180.0) {
                     nextTrail = (nextTrail + fix.point).takeLast(1200)
                     nextTripDist += delta
                 }
@@ -355,6 +373,7 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleTerrain3d() = _uiState.update { it.copy(terrain3dEnabled = !it.terrain3dEnabled) }
     fun toggleBuildings3d() = _uiState.update { it.copy(buildings3dEnabled = !it.buildings3dEnabled) }
+    fun toggleTransitOverlay() = _uiState.update { it.copy(transitOverlayEnabled = !it.transitOverlayEnabled) }
     fun toggleGlobeProjection() = _uiState.update {
         val next = !it.globeProjectionEnabled
         it.copy(
@@ -363,8 +382,21 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
     fun toggleUnits() = _uiState.update { it.copy(useImperialUnits = !it.useImperialUnits) }
-    fun setShowLayersSheet(show: Boolean) = _uiState.update { it.copy(showLayersSheet = show, showBookmarksSheet = false) }
-    fun setShowBookmarksSheet(show: Boolean) = _uiState.update { it.copy(showBookmarksSheet = show, showLayersSheet = false) }
+    fun onRenderStateChanged(isRendering: Boolean, errorText: String? = null) {
+        _uiState.update { cur ->
+            if (cur.isRegionRendering == isRendering && cur.renderErrorText == errorText) cur
+            else cur.copy(isRegionRendering = isRendering, renderErrorText = errorText)
+        }
+    }
+    fun setShowLayersSheet(show: Boolean) = _uiState.update {
+        it.copy(showLayersSheet = show, showBookmarksSheet = false, showTelemetryDetailSheet = false)
+    }
+    fun setShowBookmarksSheet(show: Boolean) = _uiState.update {
+        it.copy(showBookmarksSheet = show, showLayersSheet = false, showTelemetryDetailSheet = false)
+    }
+    fun setShowTelemetryDetailSheet(show: Boolean) = _uiState.update {
+        it.copy(showTelemetryDetailSheet = show, showLayersSheet = false, showBookmarksSheet = false)
+    }
     fun zoomIn() = dispatchCamera(MapCameraCommand.ZoomBy(1.15))
     fun zoomOut() = dispatchCamera(MapCameraCommand.ZoomBy(-1.15))
     fun resetNorth() = dispatchCamera(MapCameraCommand.ResetNorth)
@@ -509,6 +541,10 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun calculateRouteTo(destination: PlaceResult, autoStartNav: Boolean = false) {
         val origin = _uiState.value.liveLocation?.point ?: _uiState.value.mapCenter
+        if (MapsGeoMath.haversineMeters(origin, destination.point) < 20.0) {
+            _uiState.update { it.copy(statusBanner = "You are already right at ${destination.name}") }
+            return
+        }
         val profile = _uiState.value.travelProfile
         routeJob?.cancel()
         routeJob = viewModelScope.launch {
@@ -656,6 +692,7 @@ class MapsViewModel(application: Application) : AndroidViewModel(application) {
                 isMeasuring = entering,
                 showLayersSheet = if (entering) false else state.showLayersSheet,
                 showBookmarksSheet = if (entering) false else state.showBookmarksSheet,
+                showTelemetryDetailSheet = if (entering) false else state.showTelemetryDetailSheet,
                 measurePoints = if (entering) state.measurePoints else emptyList(),
                 measureClosedPolygon = if (entering) state.measureClosedPolygon else false,
                 selectedPlace = if (entering) null else state.selectedPlace,

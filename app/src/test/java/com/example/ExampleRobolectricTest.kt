@@ -303,15 +303,29 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("studio_tool_maps").performClick()
         composeTestRule.waitForIdle()
 
-        // Verify full-screen Maps root, search bar, and live GPS prompt are shown
+        // Verify full-screen Maps root, MapViewWrapper, search bar, top live compass bar, scale bar, and live GPS prompt are shown
         composeTestRule.onNodeWithTag("maps_fullscreen_root").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("map_view_wrapper").assertIsDisplayed()
         composeTestRule.onNodeWithTag("maps_search_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_top_compass_bar").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_top_compass_bar").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_scale_bar").assertIsDisplayed()
         composeTestRule.onNodeWithTag("maps_allow_location_banner").assertIsDisplayed()
 
-        // Open Map Layers sheet and select Tesla Night 3D style
+        // Tap the bigger speed/heading telemetry strip to open Detailed Telemetry Sheet
+        composeTestRule.onNodeWithTag("maps_telemetry_detail_trigger").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("maps_telemetry_detail_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_telemetry_detail_close").performClick()
+        composeTestRule.waitForIdle()
+
+        // Open Map Layers sheet and select OSM Streets & Tesla Night styles
         composeTestRule.onNodeWithTag("maps_layers_button").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("maps_layers_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("maps_style_osm_streets").performClick()
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("maps_style_tesla_dark").performClick()
         composeTestRule.waitForIdle()
 

@@ -598,6 +598,108 @@ class ClipperCoreMathTests {
         assertEquals("NE", com.example.core.maps.MapsGeoMath.compassCardinal(45f))
         assertEquals("Turn right onto Market St", com.example.core.maps.MapsGeoMath.buildHumanInstruction("turn", "right", "Market St"))
     }
+
+    @Test
+    fun mapsGeoMath_scaleBarAndMultiModalTransitLegsAreExact() {
+        val mumbaiScale = com.example.core.maps.MapsGeoMath.computeScaleBarSpec(
+            latitudeDeg = 19.1297,
+            zoom = 16.0,
+            useImperial = false,
+            maxBarWidthDp = 92f,
+        )
+        assertTrue(mumbaiScale.label.endsWith("m") || mumbaiScale.label.endsWith("km"))
+        assertTrue(mumbaiScale.widthDp in 32f..92f)
+        assertTrue(mumbaiScale.metersRepresented in 20.0..500.0)
+
+        val estimates = com.example.core.maps.MapsGeoMath.estimateTravelComparison(distanceMeters = 4500.0)
+        assertEquals(6, estimates.size)
+        assertTrue(estimates.any { it.profile == com.example.core.maps.TravelProfile.BUS })
+        assertTrue(estimates.any { it.profile == com.example.core.maps.TravelProfile.METRO })
+        assertTrue(estimates.any { it.profile == com.example.core.maps.TravelProfile.TWO_WHEELER })
+
+        val origin = com.example.core.maps.GeoPoint(19.1297, 72.8707)
+        val dest = com.example.core.maps.GeoPoint(19.1150, 72.8690)
+        val corridor = com.example.core.maps.NavigationRoute(
+            index = 0,
+            distanceMeters = 2100.0,
+            durationSeconds = 320.0,
+            summary = "Mahakali Caves Rd",
+            geometry = listOf(origin, dest),
+            steps = emptyList(),
+        )
+        val busOrigin = com.example.core.maps.NearbyPoi(
+            id = "b1",
+            name = "SEEPZ Bus Station",
+            category = com.example.core.maps.PoiCategory.BUS_STOP,
+            point = com.example.core.maps.GeoPoint(19.1285, 72.8710),
+            distanceMeters = 140.0,
+        )
+        val busDest = com.example.core.maps.NearbyPoi(
+            id = "b2",
+            name = "Andheri East Depot",
+            category = com.example.core.maps.PoiCategory.BUS_STOP,
+            point = com.example.core.maps.GeoPoint(19.1160, 72.8692),
+            distanceMeters = 115.0,
+        )
+        val busRoute = com.example.core.maps.MapsGeoMath.buildTransitRouteFromRealStops(
+            profile = com.example.core.maps.TravelProfile.BUS,
+            origin = origin,
+            destination = dest,
+            corridorRoute = corridor,
+            originStop = busOrigin,
+            destStop = busDest,
+        )
+        assertEquals(3, busRoute.transitLegs.size)
+        assertEquals("WALK", busRoute.transitLegs[0].modeLabel)
+        assertEquals("BUS", busRoute.transitLegs[1].modeLabel)
+        assertTrue(busRoute.transitLegs[1].title.contains("SEEPZ Bus Station"))
+        assertEquals("WALK", busRoute.transitLegs[2].modeLabel)
+    }
+
+    @Test
+    fun deviceLocationSensorTracker_tiltCompensatedAzimuthIsGimbalLockFree() {
+        // 1. Phone lying flat facing North (+X=East, +Y=North, +Z=Up)
+        val flatNorth = floatArrayOf(
+            1f, 0f, 0f,
+            0f, 1f, 0f,
+            0f, 0f, 1f,
+        )
+        assertEquals(0f, com.example.core.maps.DeviceLocationSensorTracker.computeTiltCompensatedAzimuthDegrees(flatNorth), 0.1f)
+
+        // 2. Phone lying flat rotated 90° CW facing East (+X=South, +Y=East, +Z=Up)
+        val flatEast = floatArrayOf(
+            0f, 1f, 0f,
+            -1f, 0f, 0f,
+            0f, 0f, 1f,
+        )
+        assertEquals(90f, com.example.core.maps.DeviceLocationSensorTracker.computeTiltCompensatedAzimuthDegrees(flatEast), 0.1f)
+
+        // 3. Phone held straight upright (90° vertical) facing North (+X=East, +Y=Up, +Z=South)
+        val uprightNorth = floatArrayOf(
+            1f, 0f, 0f,
+            0f, 0f, -1f,
+            0f, 1f, 0f,
+        )
+        assertEquals(0f, com.example.core.maps.DeviceLocationSensorTracker.computeTiltCompensatedAzimuthDegrees(uprightNorth), 0.1f)
+
+        // 4. Phone held straight upright facing West (+X=North, +Y=Up, +Z=East)
+        val uprightWest = floatArrayOf(
+            0f, 0f, 1f,
+            1f, 0f, 0f,
+            0f, 1f, 0f,
+        )
+        assertEquals(270f, com.example.core.maps.DeviceLocationSensorTracker.computeTiltCompensatedAzimuthDegrees(uprightWest), 0.1f)
+
+        // 5. Phone tilted 45° toward user facing North (natural handheld walking angle)
+        val c = kotlin.math.cos(Math.PI / 4.0).toFloat()
+        val s = kotlin.math.sin(Math.PI / 4.0).toFloat()
+        val tilted45North = floatArrayOf(
+            1f, 0f, 0f,
+            0f, c, -s,
+            0f, s, c,
+        )
+        assertEquals(0f, com.example.core.maps.DeviceLocationSensorTracker.computeTiltCompensatedAzimuthDegrees(tilted45North), 0.1f)
+    }
 }
 
 

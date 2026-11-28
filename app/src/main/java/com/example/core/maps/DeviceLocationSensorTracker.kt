@@ -19,6 +19,8 @@ import com.google.android.gms.location.Priority
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlin.math.abs
+import kotlin.math.atan2
 
 data class LiveGpsTelemetry(
     val point: GeoPoint,
@@ -31,7 +33,7 @@ data class LiveGpsTelemetry(
 )
 
 /**
- * Real foreground Android GPS + Hardware Compass sensor tracker.
+ * Real foreground Android GPS + Gimbal-Lock-Free Hardware Compass sensor tracker.
  * Uses Google Play Services FusedLocationProviderClient for fast high-precision fixes
  * with automatic fallback to native Android LocationManager (GPS + Network).
  */
@@ -50,14 +52,14 @@ object DeviceLocationSensorTracker {
                     accuracyMeters = loc.accuracy.coerceAtLeast(1f),
                     speedMps = if (loc.hasSpeed()) loc.speed.coerceAtLeast(0f) else 0f,
                     altitudeMeters = if (loc.hasAltitude()) loc.altitude else 0.0,
-                    gpsBearingDegrees = if (loc.hasBearing() && loc.speed > 1.2f) loc.bearing else null,
+                    gpsBearingDegrees = if (loc.hasBearing() && loc.speed > 1.8f) loc.bearing else null,
                     provider = loc.provider ?: "fused",
                     timestampMs = loc.time,
                 ),
             )
         }
 
-        // 1. Try instant last known location from Fused or LocationManager
+        // 1. Instant last known location
         fusedClient?.lastLocation?.addOnSuccessListener { loc ->
             if (loc != null) emitLocation(loc)
         }
@@ -68,7 +70,7 @@ object DeviceLocationSensorTracker {
             if (bestLast != null) emitLocation(bestLast)
         }
 
-        // 2. Register FusedLocationProviderClient high-frequency updates (1 Hz)
+        // 2. High-accuracy 1 Hz Fused updates
         val fusedCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.lastLocation?.let { emitLocation(it) }
@@ -86,7 +88,7 @@ object DeviceLocationSensorTracker {
             }.getOrDefault(false)
         }
 
-        // 3. Also bind native LocationManager fallback if Fused isn't available
+        // 3. Fallback to native LocationManager
         val legacyListener = object : LocationListener {
             override fun onLocationChanged(location: Location) = emitLocation(location)
             @Deprecated("Deprecated in Java")
@@ -115,8 +117,35 @@ object DeviceLocationSensorTracker {
     }
 
     /**
-     * Streams smoothed hardware compass azimuth (0..360° True/Magnetic North) from device rotation vector
-     * or accelerometer + magnetometer sensors.
+     * Computes tilt-compensated, gimbal-lock-free azimuth (0..360° clockwise from Magnetic North)
+     * directly from the 3x3 world-to-device rotation matrix.
+     * Seamlessly blends +Y (top edge when flat) and -Z (camera forward when held upright) so
+     * tilting the phone from 0° flat to 90° vertical never flips or jitters the compass arrow!
+     */
+    internal fun computeTiltCompensatedAzimuthDegrees(rotMatrix: FloatArray): Float {
+        if (rotMatrix.size < 9) return 0f
+        // World East-North-Up components of body +Y (top of phone) and -Z (out the back of phone):
+        val yEast = rotMatrix[1].toDouble()
+        val yNorth = rotMatrix[4].toDouble()
+        val zBackEast = -rotMatrix[2].toDouble()
+        val zBackNorth = -rotMatrix[5].toDouble()
+
+        // rotMatrix[8] = cos(tilt): ~1.0 when phone is flat, ~0.0 when phone is vertical
+        val flatness = abs(rotMatrix[8].toDouble()).coerceIn(0.0, 1.0)
+        // Smooth blend: flat uses +Y (top of phone), upright uses -Z (forward line of sight)
+        val wY = ((flatness - 0.25) / 0.45).coerceIn(0.0, 1.0)
+        val wZ = 1.0 - wY
+
+        val east = wY * yEast + wZ * zBackEast
+        val north = wY * yNorth + wZ * zBackNorth
+        val rawDeg = Math.toDegrees(atan2(east, north)).toFloat()
+        return ((rawDeg % 360f) + 360f) % 360f
+    }
+
+    /**
+     * Streams smooth, tilt-compensated hardware compass heading (0..360° North = 0, East = 90,
+     * South = 180, West = 270) at ~20 Hz so the user's blue-dot arrow and top compass tape move
+     * fluidly with their phone.
      */
     fun observeCompassHeading(context: Context): Flow<Float> = callbackFlow {
         val sensorManager = context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
@@ -138,7 +167,6 @@ object DeviceLocationSensorTracker {
         var lastEmitMs = 0L
 
         val rotMatrix = FloatArray(9)
-        val orientation = FloatArray(3)
 
         fun publishAzimuth(rawDeg: Float) {
             val normalized = ((rawDeg % 360f) + 360f) % 360f
@@ -146,10 +174,16 @@ object DeviceLocationSensorTracker {
                 initialized = true
                 normalized
             } else {
-                MapsGeoMath.interpolateAngleDegrees(smoothedHeading, normalized, 0.22f)
+                val delta = abs(MapsGeoMath.shortestAngleDeltaDegrees(smoothedHeading, normalized))
+                // Small deadzone eliminates micro-jitter while keeping fast turns responsive
+                if (delta < 0.8f) smoothedHeading
+                else {
+                    val alpha = if (delta > 25f) 0.35f else 0.20f
+                    MapsGeoMath.interpolateAngleDegrees(smoothedHeading, normalized, alpha)
+                }
             }
             val now = System.currentTimeMillis()
-            if (now - lastEmitMs >= 80L) {
+            if (now - lastEmitMs >= 50L) {
                 lastEmitMs = now
                 trySend(smoothedHeading)
             }
@@ -160,15 +194,13 @@ object DeviceLocationSensorTracker {
                 when (event.sensor.type) {
                     Sensor.TYPE_ROTATION_VECTOR -> {
                         SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-                        SensorManager.getOrientation(rotMatrix, orientation)
-                        publishAzimuth(Math.toDegrees(orientation[0].toDouble()).toFloat())
+                        publishAzimuth(computeTiltCompensatedAzimuthDegrees(rotMatrix))
                     }
                     Sensor.TYPE_ACCELEROMETER -> {
                         System.arraycopy(event.values, 0, gravity, 0, 3)
                         hasGravity = true
                         if (hasGeomagnetic && SensorManager.getRotationMatrix(rotMatrix, null, gravity, geomagnetic)) {
-                            SensorManager.getOrientation(rotMatrix, orientation)
-                            publishAzimuth(Math.toDegrees(orientation[0].toDouble()).toFloat())
+                            publishAzimuth(computeTiltCompensatedAzimuthDegrees(rotMatrix))
                         }
                     }
                     Sensor.TYPE_MAGNETIC_FIELD -> {
@@ -182,7 +214,7 @@ object DeviceLocationSensorTracker {
         }
 
         if (rotSensor != null) {
-            sensorManager.registerListener(listener, rotSensor, SensorManager.SENSOR_DELAY_UI)
+            sensorManager.registerListener(listener, rotSensor, SensorManager.SENSOR_DELAY_GAME)
         } else {
             if (accelSensor != null) sensorManager.registerListener(listener, accelSensor, SensorManager.SENSOR_DELAY_UI)
             if (magSensor != null) sensorManager.registerListener(listener, magSensor, SensorManager.SENSOR_DELAY_UI)
